@@ -1,0 +1,260 @@
+/* =========================
+   RESET
+========================= */
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+}
+
+
+/* =========================
+   POSTER
+========================= */
+
+.poster-section {
+    padding: 0 !important;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.poster-section img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+}
+
+
+/* =========================
+   LOGIN SECTION
+========================= */
+
+.login-section {
+    background-color: #eee6da;
+
+    min-height: 100vh;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+
+    padding: 0;
+}
+
+
+/* =========================
+   LOGIN CONTENT
+========================= */
+
+.login-content {
+    width: 75%;
+    max-width: 500px;
+}
+
+
+/* =========================
+   TITLE
+========================= */
+
+.login-content h1 {
+    text-align: center;
+
+    font-family: Georgia, serif;
+    font-size: 38px;
+    font-weight: bold;
+
+    color: #34261f;
+
+    margin-bottom: 0;
+}
+
+.subtitle {
+    text-align: center;
+
+    font-size: 21px;
+    color: #34261f;
+
+    margin-top: 2px;
+    margin-bottom: 60px;
+}
+
+
+/* =========================
+   INPUT
+========================= */
+
+.input-group-custom {
+    position: relative;
+    margin-bottom: 20px;
+}
+
+.input-group-custom .form-control {
+    height: 54px;
+    width: 100%;
+
+    padding-left: 68px;
+
+    background-color: #faf7f2;
+
+    border: 1px solid #9a806d;
+    border-radius: 6px;
+
+    font-size: 18px;
+    color: #34261f;
+
+    box-shadow: 5px 5px 3px rgba(0, 0, 0, 0.25);
+}
+
+.input-group-custom .form-control::placeholder {
+    color: #958476;
+}
+
+.input-group-custom .form-control:focus {
+    border-color: #80583c;
+
+    box-shadow: 5px 5px 3px rgba(0, 0, 0, 0.2);
+}
+
+
+/* =========================
+   INPUT ICON
+========================= */
+
+.input-icon {
+    position: absolute;
+
+    left: 15px;
+    top: 50%;
+
+    transform: translateY(-50%);
+
+    font-size: 28px;
+
+    z-index: 2;
+}
+
+
+/* =========================
+   REMEMBER ME
+========================= */
+
+.remember {
+    display: flex;
+    align-items: center;
+
+    margin-top: 15px;
+    margin-bottom: 30px;
+}
+
+.remember input {
+    width: 45px;
+    height: 45px;
+
+    margin-right: 10px;
+
+    appearance: none;
+
+    background-color: #faf7f2;
+
+    border: 1px solid #9a806d;
+    border-radius: 6px;
+
+    cursor: pointer;
+}
+
+.remember input:checked {
+    background-color: #80583c;
+}
+
+.remember label {
+    font-size: 22px;
+    color: #34261f;
+
+    cursor: pointer;
+}
+
+
+/* =========================
+   LOGIN BUTTON
+========================= */
+
+.login-btn {
+    width: 100%;
+    height: 55px;
+
+    border: none;
+    border-radius: 30px;
+
+    background-color: #80583c;
+    color: white;
+
+    font-size: 24px;
+    font-weight: bold;
+
+    box-shadow: 5px 5px 3px rgba(0, 0, 0, 0.25);
+
+    cursor: pointer;
+
+    transition: 0.2s;
+}
+
+.login-btn:hover {
+    background-color: #6f4b32;
+}
+
+
+/* =========================
+   OR DIVIDER
+========================= */
+
+.divider {
+    display: flex;
+    align-items: center;
+
+    gap: 20px;
+
+    margin: 40px 0 25px;
+}
+
+.divider span {
+    flex: 1;
+
+    height: 1px;
+
+    background-color: #806f63;
+}
+
+.divider p {
+    margin: 0;
+
+    font-size: 18px;
+    color: #34261f;
+}
+
+
+/* =========================
+   REGISTER
+========================= */
+
+.register-text {
+    text-align: center;
+
+    font-size: 18px;
+    color: #34261f;
+}
+
+.register-text a {
+    color: #80583c;
+
+    font-weight: bold;
+
+    text-decoration: none;
+}
+
+.register-text a:hover {
+    text-decoration: underline;
+}
