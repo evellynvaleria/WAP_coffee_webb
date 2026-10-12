@@ -1,1260 +1,545 @@
 <?php
 session_start();
 
-/*
-|--------------------------------------------------------------------------
-| SAMPLE ORDER DATA
-|--------------------------------------------------------------------------
-| Untuk sementara data masih menggunakan array.
-| Nanti bagian ini bisa diganti dengan query database.
-|--------------------------------------------------------------------------
-*/
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
-$orders = [
+/* =========================================================
+   DATABASE
+   Error asli MySQL ditampilkan supaya mudah di-debug.
+   Hapus/ubah pesan ini saat sudah production.
+   ========================================================= */
+try {
+    $conn = new mysqli("localhost", "root", "", "luma");
+    $conn->set_charset("utf8mb4");
+} catch (mysqli_sql_exception $ex) {
+    die('Database connection error: ' . htmlspecialchars($ex->getMessage()));
+}
 
-    [
-        "number" => "#ORD-001",
-        "customer" => "Evellyn",
-        "time" => "10:15 AM",
-        "type" => "Dine In",
+/* =========================================================
+   SESSION / PROFILE
+   ========================================================= */
+$userName = $_SESSION['name']
+    ?? $_SESSION['user_name']
+    ?? 'Cashier';
 
-        "items" => [
-            [
-                "name" => "Cappuccino",
-                "quantity" => 1,
-                "size" => "Medium",
-                "temperature" => "Hot",
-                "price" => 35000
-            ],
-            [
-                "name" => "Croissant",
-                "quantity" => 1,
-                "size" => "",
-                "temperature" => "",
-                "price" => 20000
-            ]
-        ],
+/* =========================================================
+   HELPER FUNCTIONS
+   ========================================================= */
+function e($value): string
+{
+    return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
+}
 
-        "total" => 55000,
-        "status" => "Pending"
-    ],
+function rupiah($value): string
+{
+    return 'Rp ' . number_format((float)$value, 0, ',', '.');
+}
 
+function getColumnNames(mysqli $conn, string $table): array
+{
+    // Nama tabel yang dikirim ke sini selalu konstanta di file ini.
+    $columns = [];
+    $result = $conn->query("SHOW COLUMNS FROM `$table`");
+    while ($column = $result->fetch_assoc()) {
+        $columns[] = $column['Field'];
+    }
+    return $columns;
+}
 
-    [
-        "number" => "#ORD-002",
-        "customer" => "Amanda",
-        "time" => "10:22 AM",
-        "type" => "Take Away",
+function firstExisting(array $candidates, array $available): ?string
+{
+    foreach ($candidates as $candidate) {
+        if (in_array($candidate, $available, true)) {
+            return $candidate;
+        }
+    }
+    return null;
+}
 
-        "items" => [
-            [
-                "name" => "Iced Latte",
-                "quantity" => 1,
-                "size" => "Large",
-                "temperature" => "Cold",
-                "price" => 30000
-            ]
-        ],
+/* =========================================================
+   DETECT OPTIONAL COLUMNS
+   ========================================================= */
+try {
+    $orderDetailColumns = getColumnNames($conn, 'order_details');
+    $menuColumns        = getColumnNames($conn, 'menus');
+    $orderColumns       = getColumnNames($conn, 'orders');
+} catch (mysqli_sql_exception $ex) {
+    die('Table structure error: ' . htmlspecialchars($ex->getMessage()));
+}
 
-        "total" => 30000,
-        "status" => "Pending"
-    ],
+$statusCol = firstExisting(['order_status', 'status', 'payment_status'], $orderColumns);
+$amountCol = firstExisting(['total_amount', 'total', 'grand_total', 'total_price'], $orderColumns);
+$typeCol   = firstExisting(['order_type', 'type', 'service_type'], $orderColumns);
 
+if ($statusCol === null) {
+    die('Kolom status tidak ditemukan di tabel orders. Kolom yang ada: '
+        . htmlspecialchars(implode(', ', $orderColumns)));
+}
+if ($amountCol === null) {
+    die('Kolom total tidak ditemukan di tabel orders. Kolom yang ada: '
+        . htmlspecialchars(implode(', ', $orderColumns)));
+}
 
-    [
-        "number" => "#ORD-003",
-        "customer" => "Rafael",
-        "time" => "10:30 AM",
-        "type" => "Dine In",
+$typeSelect = $typeCol ? ", o.`$typeCol` AS order_type" : ", NULL AS order_type";
 
-        "items" => [
-            [
-                "name" => "Americano",
-                "quantity" => 1,
-                "size" => "Medium",
-                "temperature" => "Hot",
-                "price" => 25000
-            ],
-            [
-                "name" => "Donut",
-                "quantity" => 2,
-                "size" => "",
-                "temperature" => "",
-                "price" => 11000
-            ]
-        ],
+$sizeColumn     = firstExisting(['size', 'menu_size', 'drink_size', 'variant', 'item_size'], $orderDetailColumns);
+$categoryColumn = firstExisting(['category', 'menu_category', 'menu_type', 'type'], $menuColumns);
+$detailOrderBy  = in_array('order_detail_id', $orderDetailColumns, true)
+    ? 'ORDER BY od.order_detail_id ASC'
+    : '';
 
-        "total" => 47000,
-        "status" => "Processing"
-    ],
+/* =========================================================
+   UPDATE STATUS
+   Checklist hanya mengubah order menjadi Completed.
+   ========================================================= */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
+    $orderId = filter_input(INPUT_POST, 'order_id', FILTER_VALIDATE_INT);
 
+    if ($orderId && $orderId > 0) {
+        $stmt = $conn->prepare(
+            "UPDATE orders SET `$statusCol` = 'Completed' WHERE order_id = ?"
+        );
+        $stmt->bind_param("i", $orderId);
+        $stmt->execute();
+        $stmt->close();
+    }
 
-    [
-        "number" => "#ORD-004",
-        "customer" => "Nadia",
-        "time" => "10:36 AM",
-        "type" => "Take Away",
+    $redirectFilter = $_POST['filter'] ?? 'All';
+    $validFilters = ['All', 'Pending', 'Processing', 'Completed'];
+    if (!in_array($redirectFilter, $validFilters, true)) {
+        $redirectFilter = 'All';
+    }
 
-        "items" => [
-            [
-                "name" => "Matcha Latte",
-                "quantity" => 1,
-                "size" => "Large",
-                "temperature" => "Cold",
-                "price" => 32000
-            ],
-            [
-                "name" => "Cookies",
-                "quantity" => 1,
-                "size" => "",
-                "temperature" => "",
-                "price" => 16000
-            ]
-        ],
+    header('Location: order_receive.php?status=' . urlencode($redirectFilter));
+    exit;
+}
 
-        "total" => 48000,
-        "status" => "Processing"
-    ],
-
-
-    [
-        "number" => "#ORD-005",
-        "customer" => "Kevin",
-        "time" => "10:45 AM",
-        "type" => "Dine In",
-
-        "items" => [
-            [
-                "name" => "Caramel Macchiato",
-                "quantity" => 2,
-                "size" => "Medium",
-                "temperature" => "Hot",
-                "price" => 35000
-            ]
-        ],
-
-        "total" => 70000,
-        "status" => "Completed"
-    ],
-
-
-    [
-        "number" => "#ORD-006",
-        "customer" => "Sarah",
-        "time" => "10:52 AM",
-        "type" => "Take Away",
-
-        "items" => [
-            [
-                "name" => "Chocolate Cake",
-                "quantity" => 1,
-                "size" => "",
-                "temperature" => "",
-                "price" => 35000
-            ]
-        ],
-
-        "total" => 35000,
-        "status" => "Pending"
-    ]
-
-];
-
-
-/*
-|--------------------------------------------------------------------------
-| FILTER
-|--------------------------------------------------------------------------
-*/
-
+/* =========================================================
+   FILTER
+   ========================================================= */
 $filter = $_GET['status'] ?? 'All';
+$allowedFilters = ['All', 'Pending', 'Processing', 'Completed'];
 
+if (!in_array($filter, $allowedFilters, true)) {
+    $filter = 'All';
+}
 
-$filteredOrders = $orders;
+/* =========================================================
+   SUMMARY CARDS
+   ========================================================= */
+$summarySql = "
+    SELECT
+        COUNT(*) AS total_orders,
+        COALESCE(SUM(CASE WHEN `$statusCol` = 'Pending' THEN 1 ELSE 0 END), 0) AS pending_orders,
+        COALESCE(SUM(CASE WHEN `$statusCol` = 'Processing' THEN 1 ELSE 0 END), 0) AS processing_orders,
+        COALESCE(SUM(CASE WHEN `$statusCol` IN ('Completed', 'Success') THEN 1 ELSE 0 END), 0) AS completed_orders
+    FROM orders
+";
 
+try {
+    $summaryResult = $conn->query($summarySql);
+    $summary = $summaryResult->fetch_assoc();
+} catch (mysqli_sql_exception $ex) {
+    die('Summary query error: ' . htmlspecialchars($ex->getMessage()));
+}
+
+$totalOrders      = (int)($summary['total_orders'] ?? 0);
+$pendingOrders    = (int)($summary['pending_orders'] ?? 0);
+$processingOrders = (int)($summary['processing_orders'] ?? 0);
+$completedOrders  = (int)($summary['completed_orders'] ?? 0);
+
+/* =========================================================
+   FETCH ORDERS
+   Order terbaru di atas.
+   ========================================================= */
+$sql = "
+    SELECT
+        o.order_id,
+        o.user_id,
+        o.order_date,
+        o.`$amountCol` AS total_amount,
+        o.`$statusCol` AS order_status
+        $typeSelect,
+        u.name AS customer_name
+    FROM orders o
+    LEFT JOIN users u ON u.user_id = o.user_id
+";
 
 if ($filter !== 'All') {
+    $sql .= " WHERE o.`$statusCol` = ? ";
+}
 
-    $filteredOrders = array_filter(
-        $orders,
-        function ($order) use ($filter) {
+$sql .= " ORDER BY o.order_id DESC, o.order_date DESC";
 
-            return strtolower($order['status']) === strtolower($filter);
+/* Query detail dibuat sekali di luar loop. */
+$sizeSelect = $sizeColumn
+    ? ", od.`" . $sizeColumn . "` AS item_size"
+    : ", NULL AS item_size";
 
+$categorySelect = $categoryColumn
+    ? ", m.`" . $categoryColumn . "` AS menu_category"
+    : ", '' AS menu_category";
+
+$detailSql = "
+    SELECT
+        m.menu_name,
+        od.quantity,
+        od.price,
+        od.subtotal
+        $sizeSelect
+        $categorySelect
+    FROM order_details od
+    LEFT JOIN menus m ON m.menu_id = od.menu_id
+    WHERE od.order_id = ?
+    $detailOrderBy
+";
+
+$orders = [];
+
+try {
+    $stmt = $conn->prepare($sql);
+    if ($filter !== 'All') {
+        $stmt->bind_param("s", $filter);
+    }
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+    $detailStmt = $conn->prepare($detailSql);
+
+    while ($row = $result->fetch_assoc()) {
+        $orderId = (int)$row['order_id'];
+
+        $detailStmt->bind_param("i", $orderId);
+        $detailStmt->execute();
+        $detailResult = $detailStmt->get_result();
+
+        $items = [];
+
+        while ($detail = $detailResult->fetch_assoc()) {
+            $rawSize  = trim((string)($detail['item_size'] ?? ''));
+            $category = strtolower(trim((string)($detail['menu_category'] ?? '')));
+            $menuName = $detail['menu_name'] ?? 'Menu';
+
+            // Deteksi minuman dari kategori menu (jika kolomnya ada).
+            $isDrink = (
+                str_contains($category, 'drink') ||
+                str_contains($category, 'beverage') ||
+                str_contains($category, 'minuman') ||
+                str_contains($category, 'coffee') ||
+                str_contains($category, 'kopi') ||
+                str_contains($category, 'tea')
+            );
+
+            if ($rawSize !== '') {
+                $displaySize = ucfirst(strtolower($rawSize));
+            } elseif ($isDrink || $categoryColumn === null) {
+                $displaySize = 'Medium';
+            } else {
+                $displaySize = '';
+            }
+
+            $items[] = [
+                'name'     => $menuName,
+                'quantity' => (int)($detail['quantity'] ?? 0),
+                'price'    => (float)($detail['price'] ?? 0),
+                'subtotal' => (float)($detail['subtotal'] ?? 0),
+                'size'     => $displaySize,
+                'is_drink' => $isDrink || $categoryColumn === null || $rawSize !== ''
+            ];
         }
-    );
-}
 
+        $row['items']    = $items;
+        $row['number']   = '#ORD-' . str_pad((string)$orderId, 3, '0', STR_PAD_LEFT);
+        $row['customer'] = $row['customer_name'] ?: 'Guest';
+        $row['time']     = !empty($row['order_date'])
+            ? date('H:i', strtotime($row['order_date']))
+            : '-';
+        $row['type']     = $row['order_type'] ?? '-';
+        $row['total']    = (float)($row['total_amount'] ?? 0);
+        $row['status']   = $row['order_status'] ?? 'Pending';
 
-/*
-|--------------------------------------------------------------------------
-| SUMMARY
-|--------------------------------------------------------------------------
-*/
-
-$pendingCount = 0;
-$processingCount = 0;
-$completedCount = 0;
-
-foreach ($orders as $order) {
-
-    if ($order['status'] === 'Pending') {
-        $pendingCount++;
+        $orders[] = $row;
     }
 
-    if ($order['status'] === 'Processing') {
-        $processingCount++;
-    }
-
-    if ($order['status'] === 'Completed') {
-        $completedCount++;
-    }
-
+    $detailStmt->close();
+    $stmt->close();
+} catch (mysqli_sql_exception $ex) {
+    die('Orders query error: ' . htmlspecialchars($ex->getMessage()));
 }
-
-$totalOrders = count($orders);
-
-
-/*
-|--------------------------------------------------------------------------
-| FORMAT RUPIAH
-|--------------------------------------------------------------------------
-*/
-
-function rupiah($number)
-{
-    return 'Rp ' . number_format(
-        $number,
-        0,
-        ',',
-        '.'
-    );
-}
-
 ?>
-
-
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Receive - LÜMA</title>
 
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
-
-    <title>
-        Order Receive - LÜMA
-    </title>
-
-
-    <!-- =====================================================
-         FONT AWESOME
-    ====================================================== -->
-
-    <link
-        rel="stylesheet"
-        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
-    >
-
-
-    <!-- =====================================================
-         BOOTSTRAP
-    ====================================================== -->
-
-    <link
-        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css"
-        rel="stylesheet"
-    >
-
-
-    <!-- =====================================================
-         CASHIER CSS
-    ====================================================== -->
-
-    <link
-        rel="stylesheet"
-        href="order_receive.css"
-    >
-
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="order_receive.css">
 </head>
-
-
 <body>
-
-
-<div class="dashboard">
-
-
-    <!-- =====================================================
-         SIDEBAR
-    ====================================================== -->
+<div class="app-layout">
 
     <aside class="sidebar">
-
-
-        <!-- LOGO -->
-
         <div class="logo">
-
-            <div class="brand-name">
-                LÜMA
-            </div>
-
+            <img src="../assets/Group 194.png" alt="LÜMA Logo">
         </div>
-
-
-        <!-- MENU -->
 
         <nav class="sidebar-menu">
-
-
-            <!-- DASHBOARD -->
-
-            <a
-                href="dashboard.php"
-                class="menu-item"
-            >
-
+            <a href="dashboard.php" class="menu-item">
                 <i class="fa-solid fa-table-cells-large"></i>
-
-                <span>
-                    Dashboard
-                </span>
-
+                <span>Dashboard</span>
             </a>
 
-
-            <!-- ORDER RECEIVE -->
-
-            <a
-                href="order_receive.php"
-                class="menu-item active"
-            >
-
+            <a href="order_receive.php" class="menu-item active">
                 <i class="fa-solid fa-receipt"></i>
-
-                <span>
-                    Order Receive
-                </span>
-
+                <span>Order Receive</span>
             </a>
 
-
-            <!-- MENU -->
-
-            <a
-                href="menu.php"
-                class="menu-item"
-            >
-
+            <a href="menu.php" class="menu-item">
                 <i class="fa-solid fa-mug-hot"></i>
-
-                <span>
-                    Menu
-                </span>
-
+                <span>Menu</span>
             </a>
-
-
         </nav>
 
-
-        <!-- LOGOUT -->
-
-        <a
-            href="../login.php"
-            class="logout"
-        >
-
+        <a href="../logout.php" class="logout">
             <i class="fa-solid fa-arrow-right-from-bracket"></i>
-
-            <span>
-                Logout
-            </span>
-
+            <span>Logout</span>
         </a>
-
-
     </aside>
 
-
-
-    <!-- =====================================================
-         MAIN CONTENT
-    ====================================================== -->
-
     <main class="main-content">
-
-
-        <!-- =================================================
-             TOPBAR
-        ================================================== -->
-
         <header class="topbar">
-
-
-            <div class="topbar-title">
-
-                <h2>
-                    Order Receive
-                </h2>
-
-            </div>
-
-
-            <div class="cashier-profile">
-
-
-                <!-- NOTIFICATION -->
-
-                <button
-                    type="button"
-                    class="notification"
-                >
-
-                    <i class="fa-regular fa-bell"></i>
-
-                </button>
-
-
-                <!-- PROFILE -->
-
+            <h2>Order Receive</h2>
+            <div class="profile">
+                <i class="fa-regular fa-bell notification-icon"></i>
                 <div class="profile-info">
-
-                    <strong>
-                        Raka Pratama
-                    </strong>
-
-                    <small>
-                        Staff
-                    </small>
-
+                    <strong><?= e($userName) ?></strong>
+                    <small>Staff</small>
                 </div>
-
-
             </div>
-
-
         </header>
 
-
-
-        <!-- =================================================
-             WELCOME
-        ================================================== -->
-
         <section class="welcome">
-
-
-            <h1>
-                Good Morning, Cashier! 👋
-            </h1>
-
-
-            <p>
-                Here's today's order.
-            </p>
-
-
+            <h1>Good Morning, Cashier! 👋</h1>
+            <p>Here's today's order.</p>
         </section>
 
-
-
-        <!-- =================================================
-             SUMMARY CARDS
-        ================================================== -->
-
-        <section class="summary-cards">
-
-
-            <!-- PENDING -->
-
-            <div class="summary-card">
-
-                <div class="card-icon">
-
-                    <i class="fa-solid fa-hourglass-half"></i>
-
+        <section class="summary-grid">
+            <article class="summary-card">
+                <div class="summary-icon"><i class="fa-solid fa-hourglass-half"></i></div>
+                <div>
+                    <span class="summary-label">Pending</span>
+                    <strong class="summary-number"><?= $pendingOrders ?></strong>
                 </div>
+            </article>
 
-
-                <div class="card-info">
-
-                    <span class="card-title">
-                        Pending
-                    </span>
-
-                    <strong class="card-value">
-                        <?= $pendingCount ?>
-                    </strong>
-
+            <article class="summary-card">
+                <div class="summary-icon"><i class="fa-solid fa-rotate"></i></div>
+                <div>
+                    <span class="summary-label">Processing</span>
+                    <strong class="summary-number"><?= $processingOrders ?></strong>
                 </div>
+            </article>
 
-            </div>
-
-
-
-            <!-- PROCESSING -->
-
-            <div class="summary-card">
-
-                <div class="card-icon">
-
-                    <i class="fa-solid fa-rotate"></i>
-
+            <article class="summary-card">
+                <div class="summary-icon"><i class="fa-regular fa-circle-check"></i></div>
+                <div>
+                    <span class="summary-label">Completed</span>
+                    <strong class="summary-number"><?= $completedOrders ?></strong>
                 </div>
+            </article>
 
-
-                <div class="card-info">
-
-                    <span class="card-title">
-                        Processing
-                    </span>
-
-                    <strong class="card-value">
-                        <?= $processingCount ?>
-                    </strong>
-
+            <article class="summary-card">
+                <div class="summary-icon"><i class="fa-solid fa-receipt"></i></div>
+                <div>
+                    <span class="summary-label">Total Orders</span>
+                    <strong class="summary-number"><?= $totalOrders ?></strong>
                 </div>
-
-            </div>
-
-
-
-            <!-- COMPLETED -->
-
-            <div class="summary-card">
-
-                <div class="card-icon">
-
-                    <i class="fa-regular fa-circle-check"></i>
-
-                </div>
-
-
-                <div class="card-info">
-
-                    <span class="card-title">
-                        Completed
-                    </span>
-
-                    <strong class="card-value">
-                        <?= $completedCount ?>
-                    </strong>
-
-                </div>
-
-            </div>
-
-
-
-            <!-- TOTAL -->
-
-            <div class="summary-card">
-
-                <div class="card-icon">
-
-                    <i class="fa-solid fa-receipt"></i>
-
-                </div>
-
-
-                <div class="card-info">
-
-                    <span class="card-title">
-                        Total Orders
-                    </span>
-
-                    <strong class="card-value">
-                        <?= $totalOrders ?>
-                    </strong>
-
-                </div>
-
-            </div>
-
-
+            </article>
         </section>
-
-
-
-        <!-- =================================================
-             ORDER SECTION
-        ================================================== -->
 
         <section class="orders-section">
-
-
-            <!-- SECTION HEADER -->
-
-            <div class="section-header">
-
-
-                <div class="section-title">
-
-                    <h1>
-                        Order Receive
-                    </h1>
-
-                    <p>
-                        Manage today's customer orders
-                    </p>
-
-                </div>
-
-
+            <div class="section-heading">
+                <h2>Order Receive</h2>
+                <p>Manage today's customer orders</p>
             </div>
 
-
-
-            <!-- =================================================
-                 FILTER
-            ================================================== -->
-
-            <div class="order-filter">
-
-
-                <a
-                    href="order_receive.php?status=All"
-                    class="<?= $filter === 'All' ? 'active' : '' ?>"
-                >
-                    All
-                </a>
-
-
-                <a
-                    href="order_receive.php?status=Pending"
-                    class="<?= $filter === 'Pending' ? 'active' : '' ?>"
-                >
-                    Pending
-                </a>
-
-
-                <a
-                    href="order_receive.php?status=Processing"
-                    class="<?= $filter === 'Processing' ? 'active' : '' ?>"
-                >
-                    Processing
-                </a>
-
-
-                <a
-                    href="order_receive.php?status=Completed"
-                    class="<?= $filter === 'Completed' ? 'active' : '' ?>"
-                >
-                    Completed
-                </a>
-
-
-            </div>
-
-
-
-            <!-- =================================================
-                 TABLE CARD
-            ================================================== -->
-
-            <div class="orders-card">
-
-
-                <div class="orders-table">
-
-
-                    <!-- TABLE HEADER -->
-
-                    <div class="order-row order-header">
-
-
-                        <div>
-                            ORDER NUMBER
-                        </div>
-
-
-                        <div>
-                            CUSTOMER
-                        </div>
-
-
-                        <div>
-                            TIME
-                        </div>
-
-
-                        <div>
-                            ORDER TYPE
-                        </div>
-
-
-                        <div>
-                            ITEMS
-                        </div>
-
-
-                        <div>
-                            TOTAL
-                        </div>
-
-
-                        <div>
-                            STATUS
-                        </div>
-
-
-                        <div>
-                            ACTION
-                        </div>
-
-
-                    </div>
-
-
-
-                    <!-- =================================================
-                         ORDER DATA
-                    ================================================== -->
-
-                    <?php if (count($filteredOrders) > 0): ?>
-
-
-                        <?php foreach ($filteredOrders as $order): ?>
-
-
-                            <div class="order-row">
-
-
-                                <!-- ORDER NUMBER -->
-
-                                <div class="order-number">
-
-                                    <?= htmlspecialchars($order['number']) ?>
-
-                                </div>
-
-
-
-                                <!-- CUSTOMER -->
-
-                                <div>
-
-                                    <?= htmlspecialchars($order['customer']) ?>
-
-                                </div>
-
-
-
-                                <!-- TIME -->
-
-                                <div>
-
-                                    <?= htmlspecialchars($order['time']) ?>
-
-                                </div>
-
-
-
-                                <!-- ORDER TYPE -->
-
-                                <div>
-
-                                    <span class="order-type">
-
-                                        <?= htmlspecialchars($order['type']) ?>
-
-                                    </span>
-
-                                </div>
-
-
-
-                                <!-- ITEMS -->
-
-                                <div class="menu-column">
-
-
-                                    <?php foreach ($order['items'] as $item): ?>
-
-
-                                        <div class="menu-item-row">
-
-
-                                            <strong>
-
-                                                <?= htmlspecialchars($item['name']) ?>
-
-                                                ×<?= $item['quantity'] ?>
-
-                                            </strong>
-
-
-                                            <?php if (
-                                                !empty($item['size']) ||
-                                                !empty($item['temperature'])
-                                            ): ?>
-
-                                                <small>
-
-                                                    <?= htmlspecialchars($item['size']) ?>
-
-
-                                                    <?php if (
-                                                        !empty($item['size']) &&
-                                                        !empty($item['temperature'])
-                                                    ): ?>
-
-                                                        ·
-
+            <nav class="filters" aria-label="Filter orders">
+                <?php foreach (['All', 'Pending', 'Processing', 'Completed'] as $statusFilter): ?>
+                    <a
+                        href="order_receive.php?status=<?= urlencode($statusFilter) ?>"
+                        class="filter-btn <?= $filter === $statusFilter ? 'active' : '' ?>"
+                    ><?= e($statusFilter) ?></a>
+                <?php endforeach; ?>
+            </nav>
+
+            <div class="table-card">
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Order Number</th>
+                                <th>Customer</th>
+                                <th>Time</th>
+                                <th>Order Type</th>
+                                <th>Items</th>
+                                <th>Total</th>
+                                <th>Status</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        <?php if ($orders): ?>
+                            <?php foreach ($orders as $order): ?>
+                                <tr>
+                                    <td class="order-number"><?= e($order['number']) ?></td>
+                                    <td><?= e($order['customer']) ?></td>
+                                    <td><?= e($order['time']) ?></td>
+                                    <td><span class="type-badge"><?= e($order['type']) ?></span></td>
+
+                                    <td class="items-list">
+                                        <?php if ($order['items']): ?>
+                                            <?php foreach ($order['items'] as $item): ?>
+                                                <div class="item-line">
+                                                    <strong><?= e($item['name']) ?> ×<?= $item['quantity'] ?></strong>
+                                                    <?php if ($item['size'] !== ''): ?>
+                                                        <small><?= e($item['size']) ?></small>
                                                     <?php endif; ?>
+                                                    <small><?= rupiah($item['subtotal']) ?></small>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        <?php else: ?>
+                                            <small class="muted">No items</small>
+                                        <?php endif; ?>
+                                    </td>
 
+                                    <td><strong><?= rupiah($order['total']) ?></strong></td>
 
-                                                    <?= htmlspecialchars($item['temperature']) ?>
+                                    <td>
+                                        <span class="status-badge status-<?= strtolower(e($order['status'])) ?>">
+                                            <?= e($order['status']) ?>
+                                        </span>
+                                    </td>
 
-                                                </small>
+                                    <td>
+                                        <div class="action-buttons">
+                                            <button
+                                                type="button"
+                                                class="action-btn"
+                                                data-bs-toggle="modal"
+                                                data-bs-target="#detailModal<?= (int)$order['order_id'] ?>"
+                                                aria-label="View <?= e($order['number']) ?> details"
+                                                title="View order detail"
+                                            >
+                                                <i class="fa-regular fa-eye"></i>
+                                            </button>
 
+                                            <?php if ($order['status'] === 'Completed'): ?>
+                                                <button type="button" class="action-btn complete completed" disabled title="Completed">
+                                                    <i class="fa-solid fa-check"></i>
+                                                </button>
+                                            <?php else: ?>
+                                                <form method="POST" action="order_receive.php" class="complete-form"
+                                                      onsubmit="return confirm('Mark this order as completed?');">
+                                                    <input type="hidden" name="order_id" value="<?= (int)$order['order_id'] ?>">
+                                                    <input type="hidden" name="filter" value="<?= e($filter) ?>">
+                                                    <button type="submit" name="update_status" value="1"
+                                                            class="action-btn complete" title="Mark as completed"
+                                                            aria-label="Mark <?= e($order['number']) ?> as completed">
+                                                        <i class="fa-solid fa-check"></i>
+                                                    </button>
+                                                </form>
                                             <?php endif; ?>
-
-
                                         </div>
-
-
-                                    <?php endforeach; ?>
-
-
-                                </div>
-
-
-
-                                <!-- TOTAL -->
-
-                                <div>
-
-                                    <strong>
-
-                                        <?= rupiah($order['total']) ?>
-
-                                    </strong>
-
-                                </div>
-
-
-
-                                <!-- STATUS -->
-
-                                <div>
-
-                                    <span
-                                        class="status <?= strtolower($order['status']) ?>"
-                                    >
-
-                                        <?= htmlspecialchars($order['status']) ?>
-
-                                    </span>
-
-                                </div>
-
-
-
-                                <!-- ACTION -->
-
-                                <div class="order-actions">
-
-
-                                    <!-- DETAIL -->
-
-                                    <button
-                                        type="button"
-                                        class="action-btn detail-btn"
-                                        data-bs-toggle="modal"
-                                        data-bs-target="#detailModal<?= substr($order['number'], 5) ?>"
-                                        title="View Order Detail"
-                                    >
-
-                                        <i class="fa-regular fa-eye"></i>
-
-                                    </button>
-
-
-                                    <!-- COMPLETE -->
-
-                                    <?php if ($order['status'] === 'Completed'): ?>
-
-                                        <button
-                                            type="button"
-                                            class="action-btn complete-btn completed-btn"
-                                            disabled
-                                            title="Order Completed"
-                                        >
-
-                                            <i class="fa-solid fa-check"></i>
-
-                                        </button>
-
-                                    <?php else: ?>
-
-                                        <button
-                                            type="button"
-                                            class="action-btn complete-btn"
-                                            onclick="completeOrder(this)"
-                                            title="Mark as Completed"
-                                        >
-
-                                            <i class="fa-solid fa-check"></i>
-
-                                        </button>
-
-                                    <?php endif; ?>
-
-
-                                </div>
-
-
-                            </div>
-
-
-
-                        <?php endforeach; ?>
-
-
-                    <?php else: ?>
-
-
-                        <!-- NO ORDER -->
-
-                        <div class="no-orders">
-
-
-                            <i class="fa-solid fa-mug-hot"></i>
-
-
-                            <strong>
-                                No orders found
-                            </strong>
-
-
-                            <span>
-                                There are no orders with this status.
-                            </span>
-
-
-                        </div>
-
-
-                    <?php endif; ?>
-
-
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr>
+                                <td colspan="8">
+                                    <div class="empty-state">
+                                        <i class="fa-solid fa-mug-hot"></i>
+                                        <strong>No orders found</strong>
+                                        <span>There are no orders with this status.</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endif; ?>
+                        </tbody>
+                    </table>
                 </div>
-
-
             </div>
-
-
         </section>
-
-
     </main>
-
-
 </div>
 
-
-
-<!-- =========================================================
-     DETAIL MODALS
-========================================================= -->
-
-
-<?php foreach ($filteredOrders as $order): ?>
-
-
-    <div
-        class="modal fade"
-        id="detailModal<?= substr($order['number'], 5) ?>"
-        tabindex="-1"
-        aria-hidden="true"
-    >
-
-
+<?php foreach ($orders as $order): ?>
+    <div class="modal fade" id="detailModal<?= (int)$order['order_id'] ?>" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
-
-
-            <div class="modal-content">
-
-
-                <!-- MODAL HEADER -->
-
-                <div class="modal-header">
-
-
+            <div class="modal-content detail-modal">
+                <div class="modal-header detail-modal-header">
                     <div>
-
-                        <h5 class="modal-title">
-                            Order Detail
-                        </h5>
-
-                        <small>
-
-                            <?= htmlspecialchars($order['number']) ?>
-
-                        </small>
-
+                        <h5 class="modal-title">Order Detail</h5>
+                        <small><?= e($order['number']) ?></small>
                     </div>
-
-
-                    <button
-                        type="button"
-                        class="btn-close"
-                        data-bs-dismiss="modal"
-                    ></button>
-
-
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
 
-
-
-                <!-- MODAL BODY -->
-
-                <div class="modal-body">
-
-
-                    <!-- CUSTOMER -->
-
-                    <div class="detail-info">
-
-
+                <div class="modal-body detail-modal-body">
+                    <div class="detail-meta">
                         <div>
-
-                            <span>
-                                Customer
-                            </span>
-
-                            <strong>
-                                <?= htmlspecialchars($order['customer']) ?>
-                            </strong>
-
+                            <span>Customer</span>
+                            <strong><?= e($order['customer']) ?></strong>
                         </div>
-
-
                         <div>
-
-                            <span>
-                                Order Type
-                            </span>
-
-                            <strong>
-                                <?= htmlspecialchars($order['type']) ?>
-                            </strong>
-
+                            <span>Order Type</span>
+                            <strong><?= e($order['type']) ?></strong>
                         </div>
-
-
                         <div>
-
-                            <span>
-                                Time
-                            </span>
-
-                            <strong>
-                                <?= htmlspecialchars($order['time']) ?>
-                            </strong>
-
+                            <span>Time</span>
+                            <strong><?= e($order['time']) ?></strong>
                         </div>
-
-
+                        <div>
+                            <span>Status</span>
+                            <strong><?= e($order['status']) ?></strong>
+                        </div>
                     </div>
 
-
-
-                    <hr>
-
-
-
-                    <!-- ITEM DETAIL -->
-
-                    <h6>
-                        Order Items
-                    </h6>
-
-
+                    <h3>Order Items</h3>
                     <div class="detail-items">
-
-
-                        <?php foreach ($order['items'] as $item): ?>
-
-
-                            <div class="detail-item">
-
-
-                                <div class="detail-item-name">
-
-
-                                    <strong>
-
-                                        <?= htmlspecialchars($item['name']) ?>
-
-                                        ×<?= $item['quantity'] ?>
-
-                                    </strong>
-
-
-                                    <?php if (
-                                        !empty($item['size']) ||
-                                        !empty($item['temperature'])
-                                    ): ?>
-
-                                        <small>
-
-                                            <?= htmlspecialchars($item['size']) ?>
-
-
-                                            <?php if (
-                                                !empty($item['size']) &&
-                                                !empty($item['temperature'])
-                                            ): ?>
-
-                                                ·
-
-                                            <?php endif; ?>
-
-
-                                            <?= htmlspecialchars($item['temperature']) ?>
-
-                                        </small>
-
-                                    <?php endif; ?>
-
-
+                        <?php if ($order['items']): ?>
+                            <?php foreach ($order['items'] as $item): ?>
+                                <div class="detail-item">
+                                    <div>
+                                        <strong><?= e($item['name']) ?> ×<?= $item['quantity'] ?></strong>
+                                        <?php if ($item['size'] !== ''): ?>
+                                            <small><?= e($item['size']) ?></small>
+                                        <?php endif; ?>
+                                    </div>
+                                    <strong><?= rupiah($item['subtotal']) ?></strong>
                                 </div>
-
-
-                                <strong>
-
-                                    <?= rupiah($item['price'] * $item['quantity']) ?>
-
-                                </strong>
-
-
-                            </div>
-
-
-                        <?php endforeach; ?>
-
-
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <p class="muted">No items recorded for this order.</p>
+                        <?php endif; ?>
                     </div>
-
-
-
-                    <hr>
-
-
-
-                    <!-- TOTAL -->
 
                     <div class="detail-total">
-
-
-                        <span>
-                            Total
-                        </span>
-
-
-                        <strong>
-                            <?= rupiah($order['total']) ?>
-                        </strong>
-
-
+                        <span>Total</span>
+                        <strong><?= rupiah($order['total']) ?></strong>
                     </div>
-
-
                 </div>
 
-
-
-                <!-- MODAL FOOTER -->
-
-                <div class="modal-footer">
-
-
-                    <button
-                        type="button"
-                        class="btn btn-secondary"
-                        data-bs-dismiss="modal"
-                    >
-                        Close
-                    </button>
-
-
+                <div class="modal-footer detail-modal-footer">
+                    <button type="button" class="close-btn" data-bs-dismiss="modal">Close</button>
                 </div>
-
-
             </div>
-
-
         </div>
-
-
     </div>
-
-
 <?php endforeach; ?>
 
-
-
-<!-- =========================================================
-     BOOTSTRAP JS
-========================================================= -->
-
-<script
-    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"
-></script>
-
-
-
-<!-- =========================================================
-     COMPLETE ORDER
-========================================================= -->
-
-<script>
-
-function completeOrder(button) {
-
-    const row = button.closest('.order-row');
-
-    const status = row.querySelector('.status');
-
-
-    /* Change status */
-
-    status.textContent = 'Completed';
-
-    status.classList.remove(
-        'pending',
-        'processing'
-    );
-
-    status.classList.add(
-        'completed'
-    );
-
-
-    /* Change button */
-
-    button.classList.add(
-        'completed-btn'
-    );
-
-    button.disabled = true;
-
-
-    button.title = 'Order Completed';
-
-}
-
-</script>
-
-
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
 </body>
-
 </html>
