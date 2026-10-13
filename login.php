@@ -6,33 +6,90 @@ require_once "config/database.php";
 
 
 /* =====================================================
-   VARIABLE
+   HELPER: REDIRECT BERDASARKAN ROLE
 ===================================================== */
 
-$error = "";
+function redirectByRole(string $role): void
+{
+    $routes = [
+        'customer' => 'customer/dashboard.php',
+        'staff'    => 'staff/dashboard.php',
+    ];
+
+    if (isset($routes[$role])) {
+        header("Location: " . $routes[$role]);
+        exit;
+    }
+
+    // Role tidak dikenal: hapus session supaya tidak terjadi loop
+    session_unset();
+    session_destroy();
+    header("Location: login.php");
+    exit;
+}
+
+
+/* =====================================================
+   HELPER: VERIFIKASI PASSWORD
+   - Mendukung hash baru (password_hash)
+   - Mendukung password lama (plain text), lalu otomatis
+     di-upgrade menjadi hash saat login berhasil
+===================================================== */
+
+function verifyPassword(string $input, array $user, mysqli $conn): bool
+{
+    $stored = $user['password'];
+
+    // Sudah berupa hash
+    if (password_get_info($stored)['algo'] !== null) {
+        return password_verify($input, $stored);
+    }
+
+    // Masih plain text (data lama)
+    if (hash_equals($stored, $input)) {
+
+        $newHash = password_hash($input, PASSWORD_DEFAULT);
+
+        $up = $conn->prepare(
+            "UPDATE users SET password = ? WHERE user_id = ?"
+        );
+
+        if ($up) {
+            $up->bind_param("si", $newHash, $user['user_id']);
+            $up->execute();
+            $up->close();
+        }
+
+        return true;
+    }
+
+    return false;
+}
 
 
 /* =====================================================
    JIKA USER SUDAH LOGIN
 ===================================================== */
 
-if (isset($_SESSION['user_id'])) {
-
-    if ($_SESSION['role'] === 'customer') {
-
-        header("Location: customer/dashboard.php");
-        exit;
-
-    }
-
-    if ($_SESSION['role'] === 'staff') {
-
-        header("Location: staff/dashboard.php");
-        exit;
-
-    }
-
+if (isset($_SESSION['user_id'], $_SESSION['role'])) {
+    redirectByRole($_SESSION['role']);
 }
+
+
+/* =====================================================
+   CSRF TOKEN
+===================================================== */
+
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+
+/* =====================================================
+   VARIABLE
+===================================================== */
+
+$error = "";
 
 
 /* =====================================================
@@ -41,29 +98,36 @@ if (isset($_SESSION['user_id'])) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-
-    /* =================================================
-       AMBIL DATA FORM
-    ================================================= */
-
-    $email = trim($_POST['email'] ?? '');
+    $email    = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
+    $token    = $_POST['csrf_token'] ?? '';
 
+    // Pembatasan percobaan login (per session)
+    $_SESSION['login_attempts'] = $_SESSION['login_attempts'] ?? 0;
+    $_SESSION['last_attempt']   = $_SESSION['last_attempt'] ?? 0;
 
-    /* =================================================
-       VALIDASI
-    ================================================= */
+    // Reset hitungan jika sudah lewat 5 menit
+    if (time() - $_SESSION['last_attempt'] >= 300) {
+        $_SESSION['login_attempts'] = 0;
+    }
 
-    if ($email === '' || $password === '') {
+    if (!hash_equals($_SESSION['csrf_token'], $token)) {
+
+        $error = "Invalid request. Please refresh the page and try again.";
+
+    } elseif ($_SESSION['login_attempts'] >= 5) {
+
+        $error = "Too many failed attempts. Please try again in 5 minutes.";
+
+    } elseif ($email === '' || $password === '') {
 
         $error = "Please enter your email and password.";
 
     } else {
 
-
-        /* =================================================
+        /* ---------------------------------------------
            CARI USER + CEK APAKAH DIA STAFF
-        ================================================= */
+        --------------------------------------------- */
 
         $sql = "
             SELECT
@@ -86,163 +150,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             LIMIT 1
         ";
 
-
         $stmt = $conn->prepare($sql);
-
 
         if (!$stmt) {
 
-            $error = "Database error: " . $conn->error;
+            error_log("Login DB error: " . $conn->error);
+            $error = "Something went wrong. Please try again later.";
 
         } else {
 
-
-            $stmt->bind_param(
-                "s",
-                $email
-            );
-
-
+            $stmt->bind_param("s", $email);
             $stmt->execute();
 
-
-            $result = $stmt->get_result();
-
-
-            /* =============================================
-               USER DITEMUKAN
-            ============================================= */
-
-            if ($result->num_rows === 1) {
-
-
-                $user = $result->fetch_assoc();
-
-
-                /* =========================================
-                   CEK PASSWORD
-                   
-                   PASSWORD DATABASE KAMU SAAT INI
-                   MASIH PLAIN TEXT
-                ========================================= */
-
-                if ($password === $user['password']) {
-
-
-                    /* =====================================
-                       REGENERATE SESSION
-                    ===================================== */
-
-                    session_regenerate_id(true);
-
-
-                    /* =====================================
-                       TENTUKAN ROLE
-                    ===================================== */
-
-                    if (!empty($user['staff_id'])) {
-
-                        // User adalah STAFF
-                        $system_role = 'staff';
-
-                    } else {
-
-                        // User bukan staff = CUSTOMER
-                        $system_role = 'customer';
-
-                    }
-
-
-                    /* =====================================
-                       SIMPAN SESSION
-                    ===================================== */
-
-                    $_SESSION['user_id'] =
-                        $user['user_id'];
-
-                    $_SESSION['name'] =
-                        $user['name'];
-
-                    $_SESSION['email'] =
-                        $user['email'];
-
-                    $_SESSION['role'] =
-                        $system_role;
-
-
-                    /* =====================================
-                       DATA STAFF
-                    ===================================== */
-
-                    if ($system_role === 'staff') {
-
-                        $_SESSION['staff_id'] =
-                            $user['staff_id'];
-
-                        $_SESSION['position'] =
-                            $user['position'];
-
-                        $_SESSION['staff_role'] =
-                            $user['staff_role'];
-
-                    }
-
-
-                    /* =====================================
-                       REDIRECT
-                    ===================================== */
-
-                    if ($system_role === 'customer') {
-
-                        header(
-                            "Location: customer/dashboard.php"
-                        );
-
-                        exit;
-
-                    }
-
-
-                    if ($system_role === 'staff') {
-
-                        header(
-                            "Location: staff/dashboard.php"
-                        );
-
-                        exit;
-
-                    }
-
-
-                } else {
-
-                    $error =
-                        "Incorrect email or password.";
-
-                }
-
-
-            } else {
-
-                $error =
-                    "Incorrect email or password.";
-
-            }
-
+            $user = $stmt->get_result()->fetch_assoc();
 
             $stmt->close();
 
+            if ($user && verifyPassword($password, $user, $conn)) {
+
+                /* -------------------------------------
+                   LOGIN BERHASIL
+                ------------------------------------- */
+
+                session_regenerate_id(true);
+
+                // Ada di tabel staff = staff, selain itu = customer
+                $role = !empty($user['staff_id']) ? 'staff' : 'customer';
+
+                $_SESSION['user_id'] = $user['user_id'];
+                $_SESSION['name']    = $user['name'];
+                $_SESSION['email']   = $user['email'];
+                $_SESSION['role']    = $role;
+
+                if ($role === 'staff') {
+                    $_SESSION['staff_id']   = $user['staff_id'];
+                    $_SESSION['position']   = $user['position'];
+                    $_SESSION['staff_role'] = $user['staff_role'];
+                }
+
+                unset($_SESSION['login_attempts'], $_SESSION['last_attempt']);
+
+                // Token baru setelah login
+                $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+
+                redirectByRole($role);
+
+            } else {
+
+                /* -------------------------------------
+                   LOGIN GAGAL
+                ------------------------------------- */
+
+                $_SESSION['login_attempts']++;
+                $_SESSION['last_attempt'] = time();
+
+                $error = "Incorrect email or password.";
+            }
         }
-
     }
-
 }
 
 ?>
-
-
 <!DOCTYPE html>
-
 <html lang="en">
 
 <head>
@@ -254,29 +223,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         content="width=device-width, initial-scale=1.0"
     >
 
-    <title>
-        My Website
-    </title>
-
+    <title>LÜMA Coffee - Login</title>
 
     <!-- Bootstrap CSS -->
-
     <link
         href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css"
         rel="stylesheet"
     >
 
-
     <!-- Bootstrap Icons -->
-
     <link
         rel="stylesheet"
         href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css"
     >
 
-
     <!-- Login CSS -->
-
     <link
         rel="stylesheet"
         href="css/login.css"
@@ -284,18 +245,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 </head>
 
-
 <body>
-
 
 <div class="container-fluid p-0">
 
     <div class="row g-0">
 
-
-        <!-- =================================================
-             POSTER
-        ================================================== -->
+        <!-- ================= POSTER ================= -->
 
         <div class="col-md-4 poster-section">
 
@@ -307,71 +263,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
 
 
-
-        <!-- =================================================
-             LOGIN
-        ================================================== -->
+        <!-- ================= LOGIN ================= -->
 
         <div class="col-md-8 login-section">
 
-
             <div class="login-content">
 
+                <h1>Welcome Back!</h1>
 
-                <h1>
-                    Welcome Back!
-                </h1>
-
-
-                <p class="subtitle">
-                    Login to your account
-                </p>
+                <p class="subtitle">Login to your account</p>
 
 
-
-                <!-- =================================================
-                     ERROR MESSAGE
-                ================================================== -->
+                <!-- ERROR MESSAGE -->
 
                 <?php if (!empty($error)): ?>
 
                     <div class="alert alert-danger">
-
                         <?= htmlspecialchars($error) ?>
-
                     </div>
 
                 <?php endif; ?>
 
 
-
-                <!-- =================================================
-                     LOGIN FORM
-                ================================================== -->
+                <!-- LOGIN FORM -->
 
                 <form
                     method="POST"
                     action="login.php"
+                    autocomplete="on"
                 >
+
+                    <!-- CSRF TOKEN -->
+                    <input
+                        type="hidden"
+                        name="csrf_token"
+                        value="<?= htmlspecialchars($_SESSION['csrf_token']) ?>"
+                    >
 
 
                     <!-- EMAIL -->
 
                     <div class="input-group-custom">
 
-                        <span class="input-icon">
-                            👤
-                        </span>
-
+                        <span class="input-icon">👤</span>
 
                         <input
                             type="email"
                             name="email"
                             class="form-control"
                             placeholder="Email"
-                            value="<?= htmlspecialchars(
-                                $_POST['email'] ?? ''
-                            ) ?>"
+                            value="<?= htmlspecialchars($_POST['email'] ?? '') ?>"
                             autocomplete="email"
                             required
                         >
@@ -379,15 +320,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
 
 
-
                     <!-- PASSWORD -->
 
                     <div class="input-group-custom">
 
-                        <span class="input-icon">
-                            🔒
-                        </span>
-
+                        <span class="input-icon">🔒</span>
 
                         <input
                             type="password"
@@ -401,55 +338,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
 
 
-
-                    <!-- REMEMBER ME -->
-
-                    <div class="remember">
-
-                        <input
-                            type="checkbox"
-                            id="remember"
-                            name="remember"
-                        >
-
-
-                        <label for="remember">
-
-                            Remember me
-
-                        </label>
-
-                    </div>
-
-
-
                     <!-- LOGIN BUTTON -->
 
                     <button
                         type="submit"
                         class="login-btn"
                     >
-
                         Login
-
                     </button>
-
 
 
                     <!-- OR -->
 
                     <div class="divider">
-
                         <span></span>
-
-                        <p>
-                            or
-                        </p>
-
+                        <p>or</p>
                         <span></span>
-
                     </div>
-
 
 
                     <!-- REGISTER -->
@@ -458,33 +363,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         Don't have an account?
 
-                        <a href="#">
-                            Register
-                        </a>
+                        <a href="register.php">Register</a>
 
                     </p>
 
-
                 </form>
-
 
             </div>
 
         </div>
 
-
     </div>
 
 </div>
 
-
-
 <!-- Bootstrap JavaScript -->
-
 <script
     src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js">
 </script>
-
 
 </body>
 

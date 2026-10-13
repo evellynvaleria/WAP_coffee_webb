@@ -222,19 +222,53 @@ body {
 
 
 /* ==============================
+   LAYOUT 2 KOLOM (MENU + PESANAN)
+================================ */
+
+.menu-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 24px;
+    align-items: start;
+}
+
+.menu-left {
+    min-width: 0;
+}
+
+
+/* ==============================
    LUMA MOMENTS
 ================================ */
 
+.moment-label {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 4px 0 12px;
+    font-size: 14px;
+}
+
+.moment-label i {
+    color: var(--brown);
+}
+
+.moment-label span {
+    color: var(--muted);
+    font-size: 12px;
+}
+
 .moment-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 17px;
-    margin-bottom: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 14px;
+    margin-bottom: 22px;
 }
 
 .moment-card {
     min-width: 0;
-    min-height: 100px;
+    min-height: 90px;
     display: flex;
     align-items: center;
     gap: 16px;
@@ -296,7 +330,7 @@ body {
 
 .menu-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
     gap: 17px;
 }
 
@@ -308,6 +342,18 @@ body {
     background: var(--card);
     border-radius: 16px;
     box-shadow: 0 4px 12px #4a2a1a08;
+    cursor: pointer;
+    transition: transform .2s ease, box-shadow .2s ease;
+}
+
+.menu-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 20px #4a2a1a14;
+}
+
+.menu-card:focus-visible {
+    outline: 2px solid var(--brown);
+    outline-offset: 2px;
 }
 
 .menu-image {
@@ -351,9 +397,29 @@ body {
 }
 
 .menu-category {
-    margin-bottom: 16px;
+    margin-bottom: 10px;
     color: var(--muted);
     font-size: 11px;
+}
+
+.menu-sizes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 12px;
+}
+
+.size-chip {
+    min-width: 26px;
+    padding: 2px 8px;
+    border: 1px solid rgba(0, 0, 0, .15);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, .04);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.5;
+    text-align: center;
+    cursor: default;
 }
 
 .menu-card-bottom {
@@ -480,7 +546,7 @@ body {
 }
 
 .search-box input {
-    width: 240px;
+    width: 200px;
     padding: 10px 14px 10px 36px;
     border: 1px solid #dfd0c2;
     border-radius: 10px;
@@ -508,6 +574,7 @@ body {
     font-family: inherit;
     font-size: 12px;
     font-weight: 600;
+    white-space: nowrap;
     cursor: pointer;
     transition: all .2s ease;
 }
@@ -564,7 +631,203 @@ body {
 
 
 /* ==============================
-   MODAL INGREDIENT STOCK
+   CARD PESANAN
+================================ */
+
+.order-card {
+    position: sticky;
+    top: 20px;
+    max-height: calc(100vh - 40px);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 22px;
+    background: var(--card);
+    border-radius: 20px;
+    box-shadow: 0 8px 24px #4a2a1a12;
+}
+
+.order-title {
+    margin: 0 0 2px;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.order-type {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.order-type-btn {
+    padding: 10px;
+    border: 1px solid #dfd0c2;
+    border-radius: 10px;
+    background: #fff;
+    color: var(--brown-dark);
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all .2s ease;
+}
+
+.order-type-btn.active {
+    background: var(--brown-dark);
+    border-color: var(--brown-dark);
+    color: #fff;
+}
+
+.order-input {
+    width: 100%;
+    padding: 11px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #f9f3ed;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+}
+
+.order-input:focus {
+    border-color: var(--brown);
+}
+
+.order-items {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.order-empty {
+    margin: 6px 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.order-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.order-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.order-item-info strong {
+    display: block;
+    font-size: 13px;
+}
+
+.order-item-info small {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.order-item-qty {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.order-item-qty button {
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: 8px;
+    background: #f5eee7;
+    color: var(--brown);
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.order-item-qty button:hover {
+    background: var(--line);
+}
+
+.order-item-qty span {
+    min-width: 18px;
+    font-size: 13px;
+    font-weight: 700;
+    text-align: center;
+}
+
+.member-row {
+    display: flex;
+    gap: 8px;
+}
+
+.member-btn {
+    padding: 0 18px;
+    border: 1px solid #dfd0c2;
+    border-radius: 10px;
+    background: #fff;
+    color: var(--brown-dark);
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.member-btn:hover {
+    background: #f9f3ed;
+}
+
+.member-result {
+    min-height: 14px;
+    margin-top: -6px;
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.member-result.ok {
+    color: #38804b;
+}
+
+.member-result.error {
+    color: var(--red);
+}
+
+.order-total {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 6px;
+    font-size: 15px;
+}
+
+.order-total strong {
+    font-size: 18px;
+}
+
+.pay-btn {
+    padding: 14px;
+    border: none;
+    border-radius: 14px;
+    background: var(--brown);
+    color: #fff;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background .2s ease;
+}
+
+.pay-btn:hover:not(:disabled) {
+    background: var(--brown-dark);
+}
+
+.pay-btn:disabled {
+    background: #e8d3bd;
+    cursor: not-allowed;
+}
+
+
+/* ==============================
+   MODAL (INGREDIENT, MENU, PAYMENT)
 ================================ */
 
 .detail-modal {
@@ -596,6 +859,45 @@ body {
 .detail-modal-body {
     padding: 8px 21px;
 }
+
+.detail-modal-footer {
+    padding: 15px 21px;
+    border-top: 1px solid var(--line);
+    background: #fcfaf8;
+}
+
+.close-btn {
+    padding: 10px 17px;
+    border: none;
+    border-radius: 9px;
+    background: var(--brown);
+    color: #fff;
+    cursor: pointer;
+}
+
+.close-btn:hover:not(:disabled) {
+    background: var(--brown-dark);
+}
+
+.close-btn:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+}
+
+.close-btn-light {
+    background: #f5eee7;
+    color: var(--brown);
+}
+
+.close-btn-light:hover:not(:disabled) {
+    background: var(--line);
+    color: var(--brown-dark);
+}
+
+
+/* ==============================
+   INGREDIENT STOCK
+================================ */
 
 .stock-item {
     display: flex;
@@ -672,125 +974,10 @@ body {
     background: var(--brown-dark);
 }
 
-.detail-modal-footer {
-    padding: 15px 21px;
-    border-top: 1px solid var(--line);
-    background: #fcfaf8;
-}
-
-.close-btn {
-    padding: 10px 17px;
-    border: none;
-    border-radius: 9px;
-    background: var(--brown);
-    color: #fff;
-    cursor: pointer;
-}
-
-.close-btn:hover {
-    background: var(--brown-dark);
-}
-
-
-/* ==============================
-   RESPONSIVE
-================================ */
-
-@media (max-width: 1100px) {
-
-    .moment-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .main-content {
-        padding-left: 24px;
-        padding-right: 24px;
-    }
-
-}
-
-@media (max-width: 650px) {
-
-    .sidebar {
-        width: 75px;
-        padding: 20px 8px;
-    }
-
-    .sidebar .logo {
-        height: 65px;
-        margin-bottom: 25px;
-    }
-
-    .sidebar .logo img {
-        width: 55px;
-        max-width: 55px;
-        max-height: 55px;
-    }
-
-    .sidebar .menu-item,
-    .sidebar .logout {
-        justify-content: center;
-        gap: 0;
-        padding: 0 5px;
-    }
-
-    .sidebar .menu-item span,
-    .sidebar .logout span {
-        display: none;
-    }
-
-    .main-content {
-        margin-left: 75px;
-        width: calc(100% - 75px);
-        padding: 0 14px 25px;
-    }
-
-    .topbar h2 {
-        font-size: 16px;
-    }
-
-    .profile {
-        gap: 10px;
-    }
-
-    .moment-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .toolbar-right {
-        width: 100%;
-        flex-wrap: wrap;
-    }
-
-    .search-box {
-        flex: 1;
-    }
-
-    .search-box input {
-        width: 100%;
-    }
-
-}
-
 
 /* ==============================
    MENU DETAIL POPUP
 ================================ */
-
-.menu-card {
-    cursor: pointer;
-    transition: transform .2s ease, box-shadow .2s ease;
-}
-
-.menu-card:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 8px 20px #4a2a1a14;
-}
-
-.menu-card:focus-visible {
-    outline: 2px solid var(--brown);
-    outline-offset: 2px;
-}
 
 .menu-modal-body {
     padding: 21px;
@@ -931,4 +1118,278 @@ body {
 
 .menu-modal-total strong {
     font-size: 19px;
+}
+
+.pay-error {
+    margin: 16px 0 0;
+}
+
+.pay-total {
+    margin: 0 0 18px;
+    padding-top: 0;
+    border-top: none;
+}
+
+
+/* ==============================
+   RESPONSIVE
+================================ */
+
+@media (max-width: 1300px) {
+
+    .menu-columns {
+        grid-template-columns: minmax(0, 1fr) 300px;
+    }
+
+}
+
+@media (max-width: 1100px) {
+
+    .main-content {
+        padding-left: 24px;
+        padding-right: 24px;
+    }
+
+    .menu-columns {
+        grid-template-columns: 1fr;
+    }
+
+    .order-card {
+        position: static;
+        max-height: none;
+        order: -1;
+    }
+
+}
+
+@media (max-width: 650px) {
+
+    .sidebar {
+        width: 75px;
+        padding: 20px 8px;
+    }
+
+    .sidebar .logo {
+        height: 65px;
+        margin-bottom: 25px;
+    }
+
+    .sidebar .logo img {
+        width: 55px;
+        max-width: 55px;
+        max-height: 55px;
+    }
+
+    .sidebar .menu-item,
+    .sidebar .logout {
+        justify-content: center;
+        gap: 0;
+        padding: 0 5px;
+    }
+
+    .sidebar .menu-item span,
+    .sidebar .logout span {
+        display: none;
+    }
+
+    .main-content {
+        margin-left: 75px;
+        width: calc(100% - 75px);
+        padding: 0 14px 25px;
+    }
+
+    .topbar h2 {
+        font-size: 16px;
+    }
+
+    .profile {
+        gap: 10px;
+    }
+
+    .toolbar-right {
+        width: 100%;
+        flex-wrap: wrap;
+    }
+
+    .search-box {
+        flex: 1;
+    }
+
+    .search-box input {
+        width: 100%;
+    }
+
+}
+
+
+/* ==============================
+   PAYMENT CASH + STRUK
+================================ */
+
+.cash-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.cash-quick {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+}
+
+.cash-quick-btn {
+    padding: 11px 10px;
+    border: 1px solid #dfd0c2;
+    border-radius: 10px;
+    background: #fff;
+    color: var(--brown-dark);
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all .2s ease;
+}
+
+.cash-quick-btn:hover {
+    background: var(--brown);
+    border-color: var(--brown);
+    color: #fff;
+}
+
+.cash-change {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+}
+
+.cash-change strong {
+    font-size: 16px;
+}
+
+.cash-change strong.short {
+    color: var(--red);
+}
+
+.receipt-body {
+    background: #f9f3ed;
+}
+
+.receipt-paper {
+    max-width: 320px;
+    margin: 0 auto;
+    padding: 18px 20px;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px #4a2a1a10;
+    color: #1f1f1f;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.receipt-brand {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.receipt-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.receipt-row span:last-child {
+    white-space: nowrap;
+}
+
+.receipt-row.bold {
+    font-weight: 700;
+}
+
+.receipt-dash {
+    margin: 8px 0;
+    border-top: 1px dashed #777;
+}
+
+.receipt-thanks {
+    text-align: center;
+}
+
+@media print {
+
+    body * {
+        visibility: hidden !important;
+    }
+
+    #receiptPaper,
+    #receiptPaper * {
+        visibility: visible !important;
+    }
+
+    .modal,
+    .modal-dialog,
+    .modal-content,
+    .modal-body {
+        position: static !important;
+        transform: none !important;
+        overflow: visible !important;
+        height: auto !important;
+    }
+
+    #receiptPaper {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 72mm;
+        max-width: none;
+        margin: 0;
+        padding: 4mm;
+        border-radius: 0;
+        box-shadow: none;
+    }
+
+}
+
+
+/* ==============================
+   MEMBER BARU
+================================ */
+
+.member-new-btn {
+    align-self: flex-start;
+    margin-top: -6px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--brown);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.member-new-btn:hover {
+    color: var(--brown-dark);
+    text-decoration: underline;
+}
+
+.member-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.member-form .menu-modal-label {
+    margin-bottom: 6px;
+}
+
+.member-form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
 }
