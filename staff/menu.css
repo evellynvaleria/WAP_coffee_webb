@@ -358,7 +358,7 @@ body {
 
 .menu-image {
     position: relative;
-    height: 150px;
+    aspect-ratio: 1 / 1;      /* persegi */
     display: flex;
     align-items: center;
     justify-content: center;
@@ -984,8 +984,9 @@ body {
 }
 
 .menu-modal-image {
-    height: 190px;
-    margin-bottom: 18px;
+    width: 240px;
+    height: auto;             /* tinggi mengikuti aspect-ratio */
+    margin: 0 auto 18px;
     border-radius: 12px;
 }
 
@@ -1098,7 +1099,6 @@ body {
     font-weight: 700;
     text-align: center;
     outline: none;
-    -moz-appearance: textfield;
 }
 
 .qty-input::-webkit-outer-spin-button,
