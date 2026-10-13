@@ -12,7 +12,7 @@ require_once "config/database.php";
 function redirectByRole(string $role): void
 {
     $routes = [
-        'customer' => 'customer/menu.php',
+        'customer' => 'customer/dashboard.php',
         'staff'    => 'staff/dashboard.php',
     ];
 
