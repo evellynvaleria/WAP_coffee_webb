@@ -68,6 +68,17 @@ function verifyPassword(string $input, array $user, mysqli $conn): bool
 
 
 /* =====================================================
+   HELPER: AKUN INTERNAL (WALK-IN & MEMBER DARI KASIR)
+   Akun ini dibuat sistem dan tidak boleh dipakai login
+===================================================== */
+
+function isInternalAccount(string $email): bool
+{
+    return str_ends_with(strtolower($email), '@luma.local');
+}
+
+
+/* =====================================================
    JIKA USER SUDAH LOGIN
 ===================================================== */
 
@@ -90,6 +101,10 @@ if (empty($_SESSION['csrf_token'])) {
 ===================================================== */
 
 $error = "";
+
+// Pesan sukses dari register.php (tampil sekali saja)
+$success = $_SESSION['register_success'] ?? "";
+unset($_SESSION['register_success']);
 
 
 /* =====================================================
@@ -166,7 +181,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $stmt->close();
 
-            if ($user && verifyPassword($password, $user, $conn)) {
+            if (
+                $user
+                && !isInternalAccount($user['email'])
+                && verifyPassword($password, $user, $conn)
+            ) {
 
                 /* -------------------------------------
                    LOGIN BERHASIL
@@ -274,6 +293,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <p class="subtitle">Login to your account</p>
 
 
+                <!-- SUCCESS MESSAGE (setelah register) -->
+
+                <?php if (!empty($success)): ?>
+
+                    <div class="alert alert-success">
+                        <?= htmlspecialchars($success) ?>
+                    </div>
+
+                <?php endif; ?>
+
+
                 <!-- ERROR MESSAGE -->
 
                 <?php if (!empty($error)): ?>
@@ -363,7 +393,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         Don't have an account?
 
-                        <a href="register.php">Register</a>
+                        <a href="regist.php">Register</a>
 
                     </p>
 
@@ -376,11 +406,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
 
 </div>
-
-<!-- Bootstrap JavaScript -->
-<script
-    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js">
-</script>
 
 </body>
 

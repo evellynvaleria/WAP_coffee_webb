@@ -10,6 +10,7 @@ if (
 }
 
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/rewards.php';
 
 function e($value): string {
     return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
@@ -25,7 +26,7 @@ $email = $_SESSION['email'] ?? '';
 $phone = '';
 $address = '';
 $points = 0;
-$level = 'Member';
+$level = 'BRONZE';
 
 $menus = [];
 $moments = [];
@@ -77,12 +78,15 @@ try {
 
         if ($reward) {
             $points = (int)$reward['points'];
-            $level = $reward['level'] ?: 'Member';
+            $level = $reward['level'] ?: getLevel($points);
         }
     }
 } catch (Throwable $err) {
     $errors[] = 'Data rewards belum dapat dimuat.';
 }
+
+// Progress menuju level berikutnya (null kalau sudah Gold)
+$next = nextLevelInfo($points);
 
 // 3. Mengambil rekomendasi menu
 try {
@@ -162,6 +166,7 @@ try {
 }
 
 // 5. Mengambil lima riwayat pesanan customer
+//    order_status = alur Pending/Processing/Completed/Cancelled (dipakai staff)
 try {
     $stmt = $conn->prepare("
         SELECT
@@ -169,6 +174,7 @@ try {
             o.order_date,
             o.total_amount,
             o.status,
+            o.order_status,
             o.payment_method,
             COUNT(od.order_detail_id) AS item_count,
             GROUP_CONCAT(
@@ -187,6 +193,7 @@ try {
             o.order_date,
             o.total_amount,
             o.status,
+            o.order_status,
             o.payment_method
         ORDER BY o.order_date DESC, o.order_id DESC
         LIMIT 5
@@ -217,42 +224,58 @@ try {
 
     <title>LŪMA Café | Customer Dashboard</title>
 
-    
+
 <link rel="stylesheet" href="dashboard.css?v=3">
+
+<style>
+    /* Progress bar level (HTML + CSS saja) */
+    .level-progress {
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, .12);
+        overflow: hidden;
+        margin: 10px 0 6px;
+    }
+    .level-progress span {
+        display: block;
+        height: 100%;
+        border-radius: 999px;
+        background: currentColor;
+    }
+    .reward-rule { font-size: 13px; opacity: .75; margin-top: 8px; }
+
+    /* Status pesanan yang belum selesai */
+    .status.status-pending { background: #fff3d6; color: #8a5a00; }
+</style>
 
 </head>
 
 <body>
 
+
 <header class="navbar">
     <div class="container nav-content">
 
-        <a href="../dashboard_main.php" class="logo">
-            LŪMA<span>.</span>
-        </a>
+        <a href="dashboard.php" class="logo">LŪMA<span>.</span></a>
 
-        
-<nav class="nav-links">
-    <a href="dashboard.php">Home</a>
-    <a href="menu.php">Menu</a>
-    <a href="luma_moments.php">LŪMA Moments</a>
-    <a href="dashboard.php#rewards">Rewards</a>
-    <a href="my_orders.php">My orders</a>
-</nav>
-
+        <nav class="nav-links">
+            <a href="dashboard.php" class="active">Home</a>
+            <a href="menu.php">Menu</a>
+            <a href="luma_moments.php">LŪMA Moments</a>
+            <a href="dashboard.php#rewards">Rewards</a>
+            <a href="my_orders.php">My Orders</a>
+        </nav>
 
         <div class="nav-actions">
             <span class="hello-name">
                 Haloo, <?= e($name) ?>
             </span>
-
-            <a class="logout-link" href="../logout.php">
-                Logout
-            </a>
+            <a href="../logout.php" class="logout-link">Logout</a>
         </div>
 
     </div>
 </header>
+
 
 <main class="container page-content">
 
@@ -318,7 +341,7 @@ try {
             </div>
 
             <span class="member-pill">
-                <?= e($level) ?> Member
+                <?= e(levelLabel($level)) ?> Member
             </span>
 
         </div>
@@ -346,16 +369,36 @@ try {
                 </div>
 
                 <p>Poin LŪMA kamu saat ini</p>
+
+                <p class="reward-rule">
+                    +<?= (int)POINTS_PER_ORDER ?> poin untuk setiap pesanan yang selesai.
+                </p>
             </div>
 
             <div class="reward-level">
                 <span class="reward-label">MEMBERSHIP LEVEL</span>
 
-                <strong><?= e($level) ?></strong>
+                <strong><?= e(levelLabel($level)) ?></strong>
 
-                <span class="level-note">
-                    Terima kasih sudah menjadi bagian dari LŪMA.
-                </span>
+                <?php if ($next): ?>
+
+                    <div class="level-progress" aria-hidden="true">
+                        <span style="width: <?= (int)$next['percent'] ?>%"></span>
+                    </div>
+
+                    <span class="level-note">
+                        <?= number_format($next['need'], 0, ',', '.') ?> poin lagi
+                        menuju <?= e(levelLabel($next['level'])) ?>.
+                    </span>
+
+                <?php else: ?>
+
+                    <span class="level-note">
+                        Kamu sudah di level tertinggi.
+                        Terima kasih sudah menjadi bagian dari LŪMA!
+                    </span>
+
+                <?php endif; ?>
             </div>
 
         </div>
@@ -371,11 +414,9 @@ try {
                 <p>Pilihan yang bisa menemani harimu.</p>
             </div>
 
-            
-        <a class="text-link"
-        href="luma_moments.php?moment_id=<?= (int)$moment['moment_id'] ?>">
-         Discover →
-        </a>
+            <a class="text-link" href="menu.php">
+                Discover →
+            </a>
 
         </div>
 
@@ -484,7 +525,8 @@ try {
                             <?php endif; ?>
                         </p>
 
-                        <a class="text-link" href="../dashboard_main.php#menu">
+                        <a class="text-link"
+                           href="luma_moments.php?moment_id=<?= (int)$moment['moment_id'] ?>">
                             Discover →
                         </a>
 
@@ -521,10 +563,19 @@ try {
 
                 <?php foreach ($orders as $order): ?>
                     <?php
-                    $status = strtolower((string)$order['status']);
-                    $statusClass = $status === 'success'
-                        ? 'status-success'
-                        : 'status-failed';
+                    // Pakai order_status (alur staff); kalau kosong, pakai kolom status lama
+                    $statusLabel = (string)($order['order_status'] ?: $order['status']);
+                    $statusKey   = strtolower($statusLabel);
+
+                    $isCompleted = in_array($statusKey, ['completed', 'complete', 'success', 'selesai'], true);
+
+                    if ($isCompleted) {
+                        $statusClass = 'status-success';
+                    } elseif (str_contains($statusKey, 'cancel') || $statusKey === 'failed') {
+                        $statusClass = 'status-failed';
+                    } else {
+                        $statusClass = 'status-pending';
+                    }
                     ?>
 
                     <article class="order-card">
@@ -542,7 +593,7 @@ try {
                             </div>
 
                             <span class="status <?= e($statusClass) ?>">
-                                <?= e($order['status']) ?>
+                                <?= e($statusLabel) ?>
                             </span>
 
                         </div>
@@ -557,6 +608,9 @@ try {
                                 <?= e($order['payment_method']) ?>
                                 ·
                                 <?= (int)$order['item_count'] ?> item
+                                <?php if ($isCompleted): ?>
+                                    · +<?= (int)POINTS_PER_ORDER ?> pts
+                                <?php endif; ?>
                             </span>
 
                             <strong>
@@ -581,7 +635,7 @@ try {
                     dari menu favoritmu.
                 </p>
 
-                <a class="text-link" href="../dashboard_main.php#menu">
+                <a class="text-link" href="menu.php">
                     Explore menu →
                 </a>
             </div>
@@ -596,7 +650,7 @@ try {
     <div class="container footer-content">
 
         <div>
-            <a href="../dashboard_main.php" class="logo">
+            <a href="dashboard.php" class="logo">
                 LŪMA<span>.</span>
             </a>
 
