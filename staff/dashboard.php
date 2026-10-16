@@ -58,13 +58,311 @@ function firstExisting(array $candidates, array $available): ?string
     return null;
 }
 
-// KOLOM orders (sama seperti order_receive.php)
-$orderColumns = getColumnNames($conn, 'orders');
-$statusCol    = firstExisting(['order_status', 'status', 'payment_status'], $orderColumns);
-$amountCol    = firstExisting(['total_amount', 'total', 'grand_total', 'total_price'], $orderColumns);
+// Nilai enum asli di database (sama seperti di menu.php / order_receive.php)
+function enumValue(mysqli $conn, string $table, string $column, string $wanted): string
+{
+    $result = $conn->query("SHOW COLUMNS FROM `$table` LIKE '$column'");
+    $row    = $result ? $result->fetch_assoc() : null;
 
-if ($statusCol === null || $amountCol === null) {
+    if (!$row || stripos((string)$row['Type'], 'enum(') !== 0) {
+        return $wanted;
+    }
+
+    preg_match_all("/'((?:[^']|'')*)'/", $row['Type'], $matches);
+
+    $normalize = fn($v) => strtolower(preg_replace('/\s+/', '', (string)$v));
+    $options   = array_map(fn($v) => str_replace("''", "'", $v), $matches[1]);
+
+    foreach ($options as $option) {
+        if ($normalize($option) === $normalize($wanted)) {
+            return $option;
+        }
+    }
+
+    throw new Exception(
+        "Nilai '$wanted' tidak ada di kolom $table.$column (pilihan: " . implode(', ', $options) . ")."
+    );
+}
+
+/*
+ * ALUR STATUS (sama dengan order_receive.php)
+ * Pending -> Processing -> Completed
+ * Status 'Success' dari kasir dianggap Pending.
+ */
+function normalizeStatus($raw): string
+{
+    $key = strtolower(trim((string)$raw));
+
+    if (in_array($key, ['processing', 'process', 'preparing'], true)) {
+        return 'Processing';
+    }
+
+    if (in_array($key, ['completed', 'complete', 'done', 'selesai'], true)) {
+        return 'Completed';
+    }
+
+    if (str_contains($key, 'cancel')) {
+        return 'Cancelled';
+    }
+
+    return 'Pending';
+}
+
+// (dulu di JS) helper tampilan
+function statusClass(string $status): string
+{
+    return 'status-' . strtolower($status);
+}
+
+function ageText(int $minutes): string
+{
+    if ($minutes < 1) {
+        return 'Baru saja';
+    }
+
+    if ($minutes < 60) {
+        return $minutes . ' mnt lalu';
+    }
+
+    $hours = intdiv($minutes, 60);
+
+    return $hours < 24 ? $hours . ' jam lalu' : intdiv($hours, 24) . ' hari lalu';
+}
+
+function isLate(array $order): bool
+{
+    return $order['status'] === 'Pending' && $order['age'] >= 10;
+}
+
+// Langkah berikutnya untuk sebuah pesanan
+function nextAction(array $order): ?array
+{
+    if ($order['status'] === 'Pending') {
+        return ['target' => 'Processing', 'label' => 'Proses', 'icon' => 'fa-play', 'long' => 'Proses Pesanan'];
+    }
+
+    if ($order['status'] === 'Processing') {
+        return ['target' => 'Completed', 'label' => 'Selesai', 'icon' => 'fa-check', 'long' => 'Tandai Selesai'];
+    }
+
+    return null;
+}
+
+// "+ 3 from yesterday" / "- 2 from yesterday" / "Same as yesterday"
+function compareText(float $diff, callable $formatter): string
+{
+    if ((int)round($diff) === 0) {
+        return 'Same as yesterday';
+    }
+
+    return ($diff > 0 ? '+ ' : '- ') . $formatter(abs($diff)) . ' from yesterday';
+}
+
+// Gambar hanya dirender kalau filenya ada (pengganti onerror="this.remove()")
+function menuImage(string $folder, $image): string
+{
+    $image = (string)$image;
+
+    return ($image !== '' && is_file(__DIR__ . '/' . $folder . $image)) ? $folder . $image : '';
+}
+
+// STATE HALAMAN (filter status + pesanan terpilih) dibawa lewat URL
+function readState(array $src): array
+{
+    $filter = (string)($src['filter'] ?? 'All');
+    $order  = filter_var($src['order'] ?? null, FILTER_VALIDATE_INT);
+
+    return [
+        'filter' => in_array($filter, ['All', 'Pending', 'Processing', 'Completed'], true) ? $filter : 'All',
+        'order'  => ($order && $order > 0) ? $order : 0
+    ];
+}
+
+function buildUrl(array $state, array $override = []): string
+{
+    $params = array_merge($state, $override);
+
+    if ($params['filter'] === 'All') unset($params['filter']);
+    if (empty($params['order']))     unset($params['order']);
+
+    return 'dashboard.php' . ($params ? '?' . http_build_query($params) : '');
+}
+
+function stateInputs(array $state): string
+{
+    $html = '';
+
+    foreach (['filter', 'order'] as $key) {
+        if (!empty($state[$key])) {
+            $html .= '<input type="hidden" name="' . e($key) . '" value="' . e($state[$key]) . '">';
+        }
+    }
+
+    return $html;
+}
+
+// KOLOM orders (sama seperti order_receive.php)
+try {
+    $orderColumns  = getColumnNames($conn, 'orders');
+    $detailColumns = getColumnNames($conn, 'order_details');
+} catch (Throwable $err) {
+    die('Table structure error: ' . e($err->getMessage()));
+}
+
+$cfg = [
+    'status'      => firstExisting(['order_status', 'status', 'payment_status'], $orderColumns),
+    'amount'      => firstExisting(['total_amount', 'total', 'grand_total', 'total_price'], $orderColumns),
+    'type'        => firstExisting(['order_type', 'type', 'service_type'], $orderColumns),
+    'payment'     => firstExisting(['payment_method', 'payment'], $orderColumns),
+    'size'        => firstExisting(['size', 'menu_size', 'drink_size', 'variant', 'item_size'], $detailColumns),
+    'detailOrder' => in_array('order_detail_id', $detailColumns, true) ? 'ORDER BY od.order_detail_id ASC' : ''
+];
+
+if ($cfg['status'] === null || $cfg['amount'] === null) {
     die('Kolom status/total tidak ditemukan di tabel orders. Kolom yang ada: ' . e(implode(', ', $orderColumns)));
+}
+
+$statusCol = $cfg['status'];
+$amountCol = $cfg['amount'];
+
+// AMBIL PESANAN HARI INI + ITEM (dulu lewat fetch ke order_receive.php)
+function loadTodayOrders(mysqli $conn, array $cfg): array
+{
+    $typeSel = $cfg['type']    ? ", o.`{$cfg['type']}` AS order_type"       : ", NULL AS order_type";
+    $paySel  = $cfg['payment'] ? ", o.`{$cfg['payment']}` AS payment_method" : ", NULL AS payment_method";
+
+    $result = $conn->query("
+        SELECT
+            o.order_id,
+            o.`{$cfg['amount']}` AS total_amount,
+            o.`{$cfg['status']}` AS order_status,
+            DATE_FORMAT(o.order_date, '%H:%i') AS time_label,
+            TIMESTAMPDIFF(MINUTE, o.order_date, NOW()) AS age_min,
+            u.name  AS customer_name,
+            u.email AS customer_email,
+            (c.user_id IS NOT NULL) AS is_member
+            $typeSel
+            $paySel
+        FROM orders o
+        LEFT JOIN users u    ON u.user_id = o.user_id
+        LEFT JOIN customer c ON c.user_id = o.user_id
+        WHERE DATE(o.order_date) = CURDATE()
+        ORDER BY o.order_id DESC
+        LIMIT 300
+    ");
+
+    $rows = [];
+
+    while ($row = $result->fetch_assoc()) {
+        $rows[] = $row;
+    }
+
+    // Semua item sekaligus (satu query)
+    $itemsByOrder = [];
+
+    if ($rows) {
+        $ids = implode(',', array_map('intval', array_column($rows, 'order_id')));
+
+        $sizeSel = $cfg['size'] ? ", od.`{$cfg['size']}` AS item_size" : ", NULL AS item_size";
+
+        $details = $conn->query("
+            SELECT od.order_id, m.menu_name, od.quantity, od.price, od.subtotal $sizeSel
+            FROM order_details od
+            LEFT JOIN menus m ON m.menu_id = od.menu_id
+            WHERE od.order_id IN ($ids)
+            {$cfg['detailOrder']}
+        ");
+
+        while ($d = $details->fetch_assoc()) {
+            $size = trim((string)($d['item_size'] ?? ''));
+
+            $itemsByOrder[(int)$d['order_id']][] = [
+                'name'     => $d['menu_name'] ?? 'Menu',
+                'qty'      => (int)$d['quantity'],
+                'price'    => (float)$d['price'],
+                'subtotal' => (float)$d['subtotal'],
+                'size'     => $size !== '' ? ucfirst(strtolower($size)) : ''
+            ];
+        }
+    }
+
+    $orders = [];
+
+    foreach ($rows as $row) {
+
+        $id     = (int)$row['order_id'];
+        $walkin = strtolower((string)$row['customer_email']) === 'walkin@luma.local';
+
+        $orders[] = [
+            'id'        => $id,
+            'number'    => '#ORD-' . str_pad((string)$id, 3, '0', STR_PAD_LEFT),
+            'customer'  => $walkin ? 'Walk-in' : ($row['customer_name'] ?: 'Guest'),
+            'is_member' => !$walkin && (int)$row['is_member'] === 1,
+            'time'      => $row['time_label'] ?? '-',
+            'age'       => max(0, (int)$row['age_min']),
+            'type'      => $row['order_type'] ?: '-',
+            'payment'   => $row['payment_method'] ?: '',
+            'total'     => (float)$row['total_amount'],
+            'status'    => normalizeStatus($row['order_status']),
+            'items'     => $itemsByOrder[$id] ?? []
+        ];
+    }
+
+    return $orders;
+}
+
+// UPDATE STATUS (satu langkah maju saja; POST biasa lalu redirect)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
+
+    $backState = readState($_POST);
+
+    try {
+        $orderId = filter_input(INPUT_POST, 'order_id', FILTER_VALIDATE_INT);
+        $target  = (string)($_POST['status'] ?? '');
+
+        if (!$orderId || $orderId < 1) {
+            throw new Exception('Pesanan tidak valid.');
+        }
+
+        if (!in_array($target, ['Processing', 'Completed'], true)) {
+            throw new Exception('Status tidak valid.');
+        }
+
+        $stmt = $conn->prepare("SELECT `$statusCol` AS s FROM orders WHERE order_id = ? LIMIT 1");
+        $stmt->bind_param("i", $orderId);
+        $stmt->execute();
+        $current = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$current) {
+            throw new Exception('Pesanan tidak ditemukan.');
+        }
+
+        $next = ['Pending' => 'Processing', 'Processing' => 'Completed'];
+
+        if (($next[normalizeStatus($current['s'])] ?? null) !== $target) {
+            throw new Exception('Status pesanan sudah berubah, data diperbarui.');
+        }
+
+        $dbStatus = enumValue($conn, 'orders', $statusCol, $target);
+
+        $stmt = $conn->prepare("UPDATE orders SET `$statusCol` = ? WHERE order_id = ?");
+        $stmt->bind_param("si", $dbStatus, $orderId);
+        $stmt->execute();
+        $stmt->close();
+
+        $_SESSION['flash'] = [
+            'message' => '#ORD-' . str_pad((string)$orderId, 3, '0', STR_PAD_LEFT) . ' → ' . $target,
+            'error'   => false
+        ];
+
+    } catch (Throwable $err) {
+        $_SESSION['flash'] = ['message' => $err->getMessage(), 'error' => true];
+    }
+
+    // Post/Redirect/Get: refresh browser tidak mengirim ulang form
+    header('Location: ' . buildUrl($backState));
+    exit;
 }
 
 // KEMARIN (untuk perbandingan "from yesterday")
@@ -124,13 +422,71 @@ while ($row = $resultStock->fetch_assoc()) {
 
 $lowCount = count($lowStock);
 
-$jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE;
+// ==================================================
+// DATA PESANAN HARI INI (dulu dikerjakan JavaScript)
+// ==================================================
+$state  = readState($_GET);
+$filter = $state['filter'];
+
+$orders = loadTodayOrders($conn, $cfg);
+
+$recentLimit = 8;
+
+// Ringkasan: pesanan yang dibatalkan tidak dihitung
+$revenue    = 0.0;
+$countedOrd = 0;
+$pending    = 0;
+$processing = 0;
+$chip       = ['All' => count($orders), 'Pending' => 0, 'Processing' => 0, 'Completed' => 0];
+
+foreach ($orders as $order) {
+
+    if ($order['status'] !== 'Cancelled') {
+        $countedOrd++;
+        $revenue += $order['total'];
+    }
+
+    if ($order['status'] === 'Pending')    $pending++;
+    if ($order['status'] === 'Processing') $processing++;
+
+    if (isset($chip[$order['status']])) {
+        $chip[$order['status']]++;
+    }
+}
+
+// Recent orders: terbaru di atas, sesuai filter, maksimal 8
+$filtered = array_values(array_filter(
+    $orders,
+    fn($order) => $filter === 'All' || $order['status'] === $filter
+));
+
+usort($filtered, fn($a, $b) => $b['id'] <=> $a['id']);
+
+$visible = array_slice($filtered, 0, $recentLimit);
+
+// Pesanan yang dipilih untuk popup detail
+$selected = null;
+
+foreach ($orders as $order) {
+    if ($order['id'] === $state['order']) {
+        $selected = $order;
+        break;
+    }
+}
+
+// Pesan sekali tampil
+$flash = $_SESSION['flash'] ?? null;
+unset($_SESSION['flash']);
+
+$steps = ['Pending', 'Processing', 'Completed'];
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Pengganti setInterval JS: halaman dimuat ulang otomatis tiap 15 detik -->
+    <meta http-equiv="refresh" content="15">
     <title>Dashboard - LÜMA</title>
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
@@ -139,6 +495,16 @@ $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_
     <link rel="stylesheet" href="menu.css">
     <link rel="stylesheet" href="order_receive.css">
     <link rel="stylesheet" href="dashboard.css">
+
+    <style>
+        /* Filter sekarang berupa link, bukan button */
+        a.filter-btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+        a.close-btn { display: inline-block; text-align: center; text-decoration: none; }
+        .ord-number a { color: inherit; text-decoration: none; }
+        .ord-number a:hover { text-decoration: underline; }
+        .ord-foot form, .detail-modal form { margin: 0; }
+        .modal.show.d-block { overflow-y: auto; }
+    </style>
 </head>
 
 <body>
@@ -208,8 +574,8 @@ $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_
                 <div class="summary-icon"><i class="fa-solid fa-box"></i></div>
                 <div>
                     <span class="summary-label">Today's Orders</span>
-                    <strong class="summary-number" id="sumOrders">-</strong>
-                    <small class="summary-sub" id="sumOrdersSub">&nbsp;</small>
+                    <strong class="summary-number"><?= $countedOrd ?></strong>
+                    <small class="summary-sub"><?= e(compareText($countedOrd - $yesterdayData['orders'], 'strval')) ?></small>
                 </div>
             </article>
 
@@ -217,8 +583,8 @@ $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_
                 <div class="summary-icon"><i class="fa-solid fa-money-bill-wave"></i></div>
                 <div>
                     <span class="summary-label">Today's Revenue</span>
-                    <strong class="summary-number" id="sumRevenue">-</strong>
-                    <small class="summary-sub" id="sumRevenueSub">&nbsp;</small>
+                    <strong class="summary-number"><?= e(rupiah($revenue)) ?></strong>
+                    <small class="summary-sub"><?= e(compareText($revenue - $yesterdayData['revenue'], 'rupiah')) ?></small>
                 </div>
             </article>
 
@@ -226,12 +592,12 @@ $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_
                 <div class="summary-icon"><i class="fa-solid fa-fire-burner"></i></div>
                 <div>
                     <span class="summary-label">In Queue</span>
-                    <strong class="summary-number" id="sumQueue">-</strong>
-                    <small class="summary-sub" id="sumQueueSub">&nbsp;</small>
+                    <strong class="summary-number"><?= $pending + $processing ?></strong>
+                    <small class="summary-sub"><?= $pending ?> pending · <?= $processing ?> processing</small>
                 </div>
             </a>
 
-            <a href="menu.php?open=ingredients" class="summary-card summary-link">
+            <a href="menu.php?panel=ingredients" class="summary-card summary-link">
                 <div class="summary-icon"><i class="fa-solid fa-box-open"></i></div>
                 <div>
                     <span class="summary-label">Low Stock</span>
@@ -267,11 +633,14 @@ $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_
 
                     <div class="menu-toolbar">
 
-                        <div class="filters" id="statusFilters">
-                            <button type="button" class="filter-btn active" data-status="All">All <span class="chip-count">0</span></button>
-                            <button type="button" class="filter-btn" data-status="Pending">Pending <span class="chip-count">0</span></button>
-                            <button type="button" class="filter-btn" data-status="Processing">Processing <span class="chip-count">0</span></button>
-                            <button type="button" class="filter-btn" data-status="Completed">Completed <span class="chip-count">0</span></button>
+                        <!-- FILTER STATUS -->
+                        <div class="filters">
+                            <?php foreach (['All', 'Pending', 'Processing', 'Completed'] as $status): ?>
+                                <a href="<?= e(buildUrl($state, ['filter' => $status, 'order' => 0])) ?>"
+                                   class="filter-btn <?= $filter === $status ? 'active' : '' ?>">
+                                    <?= e($status) ?> <span class="chip-count"><?= $chip[$status] ?></span>
+                                </a>
+                            <?php endforeach; ?>
                         </div>
 
                         <a href="order_receive.php" class="see-all">
@@ -280,11 +649,82 @@ $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_
 
                     </div>
 
-                    <small class="live-status" id="lastUpdate">Memuat pesanan...</small>
+                    <small class="live-status">
+                        Menampilkan <?= count($visible) ?> dari <?= count($filtered) ?> pesanan hari ini ·
+                        diperbarui <?= e(date('H:i:s')) ?>
+                    </small>
 
-                    <div class="ord-grid" id="orderGrid"></div>
+                    <div class="ord-grid">
 
-                    <div class="empty-state hidden" id="noResult">
+                        <?php foreach ($visible as $order): ?>
+
+                            <?php $action = nextAction($order); ?>
+
+                            <article class="ord-card <?= e(statusClass($order['status'])) ?>">
+
+                                <div class="ord-head">
+                                    <strong class="ord-number">
+                                        <a href="<?= e(buildUrl($state, ['order' => $order['id']])) ?>"><?= e($order['number']) ?></a>
+                                    </strong>
+                                    <span class="status-badge <?= e(statusClass($order['status'])) ?>"><?= e($order['status']) ?></span>
+                                </div>
+
+                                <div class="ord-who">
+                                    <span class="ord-customer"><?= e($order['customer']) ?></span>
+                                    <?php if ($order['is_member']): ?>
+                                        <span class="member-chip">Member</span>
+                                    <?php endif; ?>
+                                </div>
+
+                                <div class="ord-meta">
+                                    <span class="type-badge"><?= e($order['type']) ?></span>
+                                    <?php if ($order['payment'] !== ''): ?>
+                                        <span class="type-badge"><?= e($order['payment']) ?></span>
+                                    <?php endif; ?>
+                                    <span class="ord-time<?= isLate($order) ? ' late' : '' ?>">
+                                        <?= e($order['time'] . ' · ' . ageText($order['age'])) ?>
+                                    </span>
+                                </div>
+
+                                <ul class="ord-items">
+                                    <?php if (!$order['items']): ?>
+                                        <li class="more">Tidak ada item</li>
+                                    <?php endif; ?>
+
+                                    <?php foreach (array_slice($order['items'], 0, 3) as $item): ?>
+                                        <li><?= e($item['qty'] . '× ' . $item['name'] . ($item['size'] !== '' ? ' (' . $item['size'] . ')' : '')) ?></li>
+                                    <?php endforeach; ?>
+
+                                    <?php if (count($order['items']) > 3): ?>
+                                        <li class="more">+<?= count($order['items']) - 3 ?> item lainnya</li>
+                                    <?php endif; ?>
+                                </ul>
+
+                                <div class="ord-foot">
+                                    <strong class="ord-total"><?= e(rupiah($order['total'])) ?></strong>
+
+                                    <?php if ($action): ?>
+                                        <form method="post" action="dashboard.php">
+                                            <input type="hidden" name="update_status" value="1">
+                                            <input type="hidden" name="order_id" value="<?= (int)$order['id'] ?>">
+                                            <input type="hidden" name="status" value="<?= e($action['target']) ?>">
+                                            <?= stateInputs($state) ?>
+                                            <button type="submit" class="ord-action">
+                                                <i class="fa-solid <?= e($action['icon']) ?>"></i> <?= e($action['label']) ?>
+                                            </button>
+                                        </form>
+                                    <?php else: ?>
+                                        <span class="ord-done"><?= $order['status'] === 'Completed' ? 'Selesai' : e($order['status']) ?></span>
+                                    <?php endif; ?>
+                                </div>
+
+                            </article>
+
+                        <?php endforeach; ?>
+
+                    </div>
+
+                    <div class="empty-state<?= $visible ? ' hidden' : '' ?>">
                         <i class="fa-solid fa-mug-hot"></i>
                         <strong>No orders found</strong>
                         <span>Belum ada pesanan dengan filter ini.</span>
@@ -308,17 +748,18 @@ $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_
 
                         <?php foreach ($popularMenus as $menu): ?>
 
+                            <?php $image = menuImage($imageFolder, $menu['image']); ?>
+
                             <a href="menu.php" class="pop-item">
 
                                 <div class="pop-thumb">
                                     <i class="fa-solid fa-mug-hot"></i>
 
-                                    <?php if (!empty($menu['image'])): ?>
+                                    <?php if ($image !== ''): ?>
                                         <img
-                                            src="<?= e($imageFolder . $menu['image']) ?>"
+                                            src="<?= e($image) ?>"
                                             alt="<?= e($menu['menu_name']) ?>"
                                             loading="lazy"
-                                            onerror="this.remove()"
                                         >
                                     <?php endif; ?>
                                 </div>
@@ -346,7 +787,7 @@ $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_
 
                     <div class="side-head">
                         <h3>Ingredient Stock</h3>
-                        <a href="menu.php?open=ingredients">Kelola</a>
+                        <a href="menu.php?panel=ingredients">Kelola</a>
                     </div>
 
                     <?php if ($lowStock): ?>
@@ -393,567 +834,103 @@ $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_
 
 </div>
 
+<?php if ($selected): ?>
 
-<!-- =====================================================
-     MODAL DETAIL PESANAN
-====================================================== -->
-<div class="modal fade" id="orderModal" tabindex="-1" aria-hidden="true">
+<?php
+$action  = nextAction($selected);
+$current = array_search($selected['status'], $steps, true);
+?>
+
+<!-- MODAL DETAIL PESANAN (dibuka lewat ?order=ID, tanpa JavaScript) -->
+<div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true">
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content detail-modal">
 
             <div class="modal-header detail-modal-header">
                 <div>
                     <h5 class="modal-title">Order Detail</h5>
-                    <small id="mNumber"></small>
+                    <small><?= e($selected['number']) ?></small>
                 </div>
 
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                <a href="<?= e(buildUrl($state, ['order' => 0])) ?>" class="btn-close btn-close-white" aria-label="Close"></a>
             </div>
 
             <div class="modal-body menu-modal-body dash-modal-body">
 
                 <div class="detail-top">
-                    <strong class="detail-number" id="mCustomer"></strong>
-                    <span class="status-badge" id="mStatus"></span>
+                    <strong class="detail-number"><?= e($selected['customer'] . ($selected['is_member'] ? ' (Member)' : '')) ?></strong>
+                    <span class="status-badge <?= e(statusClass($selected['status'])) ?>"><?= e($selected['status']) ?></span>
                 </div>
 
-                <div class="stepper" id="mStepper"></div>
+                <?php if ($current !== false): ?>
+                    <div class="stepper">
+                        <?php foreach ($steps as $index => $name): ?>
+                            <div class="step<?= $index < $current ? ' done' : '' ?><?= $index === $current ? ' active' : '' ?>">
+                                <span class="step-dot"></span>
+                                <small><?= e($name) ?></small>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
 
-                <dl class="detail-meta" id="mMeta"></dl>
+                <dl class="detail-meta">
+                    <div><dt>Tipe</dt><dd><?= e($selected['type']) ?></dd></div>
+                    <div><dt>Waktu</dt><dd><?= e($selected['time'] . ' · ' . ageText($selected['age'])) ?></dd></div>
+                    <div><dt>Pembayaran</dt><dd><?= e($selected['payment'] !== '' ? $selected['payment'] : '-') ?></dd></div>
+                </dl>
 
-                <div class="order-items" id="mItems"></div>
+                <div class="order-items">
+
+                    <?php if (!$selected['items']): ?>
+                        <p class="order-empty">Tidak ada item pada pesanan ini.</p>
+                    <?php endif; ?>
+
+                    <?php foreach ($selected['items'] as $item): ?>
+                        <div class="order-item">
+                            <div class="order-item-info">
+                                <strong><?= e($item['qty'] . '× ' . $item['name']) ?></strong>
+                                <small><?= e(($item['size'] !== '' ? $item['size'] . ' · ' : '') . rupiah($item['price'])) ?></small>
+                            </div>
+                            <strong class="order-item-sub"><?= e(rupiah($item['subtotal'])) ?></strong>
+                        </div>
+                    <?php endforeach; ?>
+
+                </div>
 
                 <div class="order-total">
                     <span>Total</span>
-                    <strong id="mTotal">Rp 0</strong>
+                    <strong><?= e(rupiah($selected['total'])) ?></strong>
                 </div>
 
             </div>
 
             <div class="modal-footer detail-modal-footer">
-                <button type="button" class="close-btn close-btn-light" data-bs-dismiss="modal">Close</button>
-                <button type="button" class="close-btn hidden" id="mAction"></button>
+
+                <a href="<?= e(buildUrl($state, ['order' => 0])) ?>" class="close-btn close-btn-light">Close</a>
+
+                <?php if ($action): ?>
+                    <form method="post" action="dashboard.php">
+                        <input type="hidden" name="update_status" value="1">
+                        <input type="hidden" name="order_id" value="<?= (int)$selected['id'] ?>">
+                        <input type="hidden" name="status" value="<?= e($action['target']) ?>">
+                        <?= stateInputs($state) ?>
+                        <button type="submit" class="close-btn"><?= e($action['long']) ?></button>
+                    </form>
+                <?php endif; ?>
+
             </div>
 
         </div>
     </div>
 </div>
+<div class="modal-backdrop fade show"></div>
 
-<div class="ord-toast" id="ordToast" role="status"></div>
+<?php endif; ?>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
-
-<script>
-
-var yesterday = <?= json_encode($yesterdayData, $jsonFlags) ?>;
-
-var orders = [];
-
-var state = {
-    filter: 'All',
-    selectedId: null,
-    busy: false
-};
-
-var RECENT_LIMIT = 8;
-
-var orderModal = new bootstrap.Modal(document.getElementById('orderModal'));
-
-
-// ==================================================
-// HELPER
-// ==================================================
-function el(tag, className, text) {
-
-    var node = document.createElement(tag);
-
-    if (className) {
-        node.className = className;
-    }
-
-    if (text !== undefined && text !== null) {
-        node.textContent = text;
-    }
-
-    return node;
-
-}
-
-function formatRupiah(number) {
-
-    return 'Rp ' + Math.round(number)
-        .toString()
-        .replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-
-}
-
-function statusClass(status) {
-    return 'status-' + status.toLowerCase();
-}
-
-function ageText(minutes) {
-
-    if (minutes < 1) {
-        return 'Baru saja';
-    }
-
-    if (minutes < 60) {
-        return minutes + ' mnt lalu';
-    }
-
-    var hours = Math.floor(minutes / 60);
-
-    return hours < 24 ? hours + ' jam lalu' : Math.floor(hours / 24) + ' hari lalu';
-
-}
-
-function isLate(order) {
-    return order.status === 'Pending' && order.age >= 10;
-}
-
-function findOrder(id) {
-
-    for (var i = 0; i < orders.length; i++) {
-        if (orders[i].id === id) {
-            return orders[i];
-        }
-    }
-
-    return null;
-
-}
-
-// Langkah berikutnya untuk sebuah pesanan (alur sama dengan Order Receive)
-function nextAction(order) {
-
-    if (order.status === 'Pending') {
-        return { target: 'Processing', label: 'Proses', icon: 'fa-play' };
-    }
-
-    if (order.status === 'Processing') {
-        return { target: 'Completed', label: 'Selesai', icon: 'fa-check' };
-    }
-
-    return null;
-
-}
-
-// "+3 from yesterday" / "-2 from yesterday" / "Same as yesterday"
-function compareText(diff, formatter) {
-
-    if (diff === 0) {
-        return 'Same as yesterday';
-    }
-
-    return (diff > 0 ? '+ ' : '- ') + formatter(Math.abs(diff)) + ' from yesterday';
-
-}
-
-var toastTimer;
-
-function toast(message, isError) {
-
-    var box = document.getElementById('ordToast');
-
-    box.textContent = message;
-    box.className = 'ord-toast show' + (isError ? ' error' : '');
-
-    clearTimeout(toastTimer);
-
-    toastTimer = setTimeout(function () {
-        box.className = 'ord-toast';
-    }, 3500);
-
-}
-
-
-// ==================================================
-// RENDER: RINGKASAN + CHIP
-// ==================================================
-function renderSummary() {
-
-    var counted = orders.filter(function (order) { return order.status !== 'Cancelled'; });
-    var revenue = counted.reduce(function (sum, order) { return sum + order.total; }, 0);
-    var pending = 0;
-    var processing = 0;
-    var chip = { All: orders.length, Pending: 0, Processing: 0, Completed: 0 };
-
-    orders.forEach(function (order) {
-
-        if (order.status === 'Pending') pending++;
-        if (order.status === 'Processing') processing++;
-
-        if (chip[order.status] !== undefined) {
-            chip[order.status]++;
-        }
-
-    });
-
-    document.getElementById('sumOrders').textContent = counted.length;
-    document.getElementById('sumOrdersSub').textContent = compareText(counted.length - yesterday.orders, String);
-
-    document.getElementById('sumRevenue').textContent = formatRupiah(revenue);
-    document.getElementById('sumRevenueSub').textContent = compareText(revenue - yesterday.revenue, formatRupiah);
-
-    document.getElementById('sumQueue').textContent = pending + processing;
-    document.getElementById('sumQueueSub').textContent = pending + ' pending · ' + processing + ' processing';
-
-    document.querySelectorAll('#statusFilters .filter-btn').forEach(function (button) {
-        button.querySelector('.chip-count').textContent = chip[button.dataset.status];
-        button.classList.toggle('active', button.dataset.status === state.filter);
-    });
-
-}
-
-
-// ==================================================
-// RENDER: KARTU PESANAN
-// ==================================================
-function buildCard(order) {
-
-    var card = el('article', 'ord-card ' + statusClass(order.status));
-
-    card.dataset.id = order.id;
-    card.tabIndex = 0;
-    card.setAttribute('role', 'button');
-
-    var head = el('div', 'ord-head');
-    head.appendChild(el('strong', 'ord-number', order.number));
-    head.appendChild(el('span', 'status-badge ' + statusClass(order.status), order.status));
-
-    var who = el('div', 'ord-who');
-    who.appendChild(el('span', 'ord-customer', order.customer));
-
-    if (order.is_member) {
-        who.appendChild(el('span', 'member-chip', 'Member'));
-    }
-
-    var meta = el('div', 'ord-meta');
-    meta.appendChild(el('span', 'type-badge', order.type));
-
-    if (order.payment) {
-        meta.appendChild(el('span', 'type-badge', order.payment));
-    }
-
-    meta.appendChild(el('span', 'ord-time' + (isLate(order) ? ' late' : ''), order.time + ' · ' + ageText(order.age)));
-
-    var list = el('ul', 'ord-items');
-
-    if (order.items.length === 0) {
-        list.appendChild(el('li', 'more', 'Tidak ada item'));
-    }
-
-    order.items.slice(0, 3).forEach(function (item) {
-        list.appendChild(el('li', '', item.qty + '× ' + item.name + (item.size ? ' (' + item.size + ')' : '')));
-    });
-
-    if (order.items.length > 3) {
-        list.appendChild(el('li', 'more', '+' + (order.items.length - 3) + ' item lainnya'));
-    }
-
-    var foot = el('div', 'ord-foot');
-    foot.appendChild(el('strong', 'ord-total', formatRupiah(order.total)));
-
-    var action = nextAction(order);
-
-    if (action) {
-
-        var button = el('button', 'ord-action');
-        button.type = 'button';
-        button.appendChild(el('i', 'fa-solid ' + action.icon));
-        button.appendChild(document.createTextNode(' ' + action.label));
-
-        button.addEventListener('click', function (event) {
-            event.stopPropagation();
-            advance(order);
-        });
-
-        foot.appendChild(button);
-
-    } else {
-        foot.appendChild(el('span', 'ord-done', order.status === 'Completed' ? 'Selesai' : order.status));
-    }
-
-    card.appendChild(head);
-    card.appendChild(who);
-    card.appendChild(meta);
-    card.appendChild(list);
-    card.appendChild(foot);
-
-    return card;
-
-}
-
-function renderGrid() {
-
-    var grid = document.getElementById('orderGrid');
-
-    // Terbaru di atas
-    var filtered = orders
-        .filter(function (order) { return state.filter === 'All' || order.status === state.filter; })
-        .sort(function (a, b) { return b.id - a.id; });
-
-    var visible = filtered.slice(0, RECENT_LIMIT);
-
-    grid.innerHTML = '';
-
-    visible.forEach(function (order) {
-        grid.appendChild(buildCard(order));
-    });
-
-    document.getElementById('noResult').classList.toggle('hidden', visible.length > 0);
-
-    document.getElementById('lastUpdate').textContent =
-        'Menampilkan ' + visible.length + ' dari ' + filtered.length + ' pesanan hari ini · diperbarui ' +
-        new Date().toLocaleTimeString('id-ID');
-
-}
-
-
-// ==================================================
-// RENDER: MODAL DETAIL
-// ==================================================
-function renderModal() {
-
-    var order = findOrder(state.selectedId);
-
-    if (!order) {
-        return;
-    }
-
-    document.getElementById('mNumber').textContent = order.number;
-    document.getElementById('mCustomer').textContent = order.customer + (order.is_member ? ' (Member)' : '');
-
-    var badge = document.getElementById('mStatus');
-    badge.className = 'status-badge ' + statusClass(order.status);
-    badge.textContent = order.status;
-
-    // Stepper
-    var steps = ['Pending', 'Processing', 'Completed'];
-    var current = steps.indexOf(order.status);
-    var stepper = document.getElementById('mStepper');
-
-    stepper.innerHTML = '';
-    stepper.classList.toggle('hidden', current === -1);
-
-    steps.forEach(function (name, index) {
-
-        var step = el('div', 'step' + (index < current ? ' done' : '') + (index === current ? ' active' : ''));
-
-        step.appendChild(el('span', 'step-dot'));
-        step.appendChild(el('small', '', name));
-        stepper.appendChild(step);
-
-    });
-
-    // Info
-    var meta = document.getElementById('mMeta');
-    var rows = [
-        ['Tipe', order.type],
-        ['Waktu', order.time + ' · ' + ageText(order.age)],
-        ['Pembayaran', order.payment || '-']
-    ];
-
-    meta.innerHTML = '';
-
-    rows.forEach(function (row) {
-
-        var box = el('div');
-
-        box.appendChild(el('dt', '', row[0]));
-        box.appendChild(el('dd', '', row[1]));
-        meta.appendChild(box);
-
-    });
-
-    // Item
-    var items = document.getElementById('mItems');
-
-    items.innerHTML = '';
-
-    if (order.items.length === 0) {
-        items.appendChild(el('p', 'order-empty', 'Tidak ada item pada pesanan ini.'));
-    }
-
-    order.items.forEach(function (item) {
-
-        var row = el('div', 'order-item');
-        var info = el('div', 'order-item-info');
-
-        info.appendChild(el('strong', '', item.qty + '× ' + item.name));
-        info.appendChild(el('small', '', (item.size ? item.size + ' · ' : '') + formatRupiah(item.price)));
-
-        row.appendChild(info);
-        row.appendChild(el('strong', 'order-item-sub', formatRupiah(item.subtotal)));
-        items.appendChild(row);
-
-    });
-
-    document.getElementById('mTotal').textContent = formatRupiah(order.total);
-
-    // Tombol aksi
-    var button = document.getElementById('mAction');
-    var action = nextAction(order);
-
-    button.classList.toggle('hidden', !action);
-
-    if (action) {
-        button.textContent = action.target === 'Processing' ? 'Proses Pesanan' : 'Tandai Selesai';
-    }
-
-}
-
-function renderAll() {
-
-    renderSummary();
-    renderGrid();
-
-    if (state.selectedId !== null) {
-
-        if (findOrder(state.selectedId)) {
-            renderModal();
-        } else {
-            state.selectedId = null;
-            orderModal.hide();
-        }
-
-    }
-
-}
-
-
-// ==================================================
-// DATA: REFRESH + UPDATE STATUS (memakai endpoint order_receive.php)
-// ==================================================
-function loadOrders() {
-
-    return fetch('order_receive.php?fetch_orders=1&scope=today')
-        .then(function (res) { return res.json(); })
-        .then(function (data) {
-
-            if (!data.ok) {
-                throw new Error(data.message || 'Gagal memuat pesanan.');
-            }
-
-            orders = data.orders;
-            renderAll();
-
-        });
-
-}
-
-function advance(order) {
-
-    var action = nextAction(order);
-
-    if (!action || state.busy) {
-        return;
-    }
-
-    if (action.target === 'Completed' && !confirm('Tandai ' + order.number + ' sebagai selesai?')) {
-        return;
-    }
-
-    var form = new FormData();
-
-    form.append('update_status', '1');
-    form.append('order_id', order.id);
-    form.append('status', action.target);
-
-    state.busy = true;
-
-    fetch('order_receive.php', { method: 'POST', body: form })
-        .then(function (res) { return res.json(); })
-        .then(function (data) {
-
-            if (!data.ok) {
-                toast(data.message || 'Status gagal diperbarui.', true);
-            } else {
-                toast(order.number + ' → ' + data.status);
-            }
-
-            return loadOrders();
-
-        })
-        .catch(function () {
-            toast('Koneksi gagal, coba lagi.', true);
-        })
-        .finally(function () {
-            state.busy = false;
-        });
-
-}
-
-
-// ==================================================
-// EVENT
-// ==================================================
-function openOrder(id) {
-
-    state.selectedId = id;
-    renderModal();
-    orderModal.show();
-
-}
-
-document.getElementById('orderGrid').addEventListener('click', function (event) {
-
-    var card = event.target.closest('.ord-card');
-
-    if (card) {
-        openOrder(Number(card.dataset.id));
-    }
-
-});
-
-document.getElementById('orderGrid').addEventListener('keydown', function (event) {
-
-    if ((event.key === 'Enter' || event.key === ' ') && event.target.classList.contains('ord-card')) {
-        event.preventDefault();
-        openOrder(Number(event.target.dataset.id));
-    }
-
-});
-
-document.querySelectorAll('#statusFilters .filter-btn').forEach(function (button) {
-    button.addEventListener('click', function () {
-        state.filter = button.dataset.status;
-        renderSummary();
-        renderGrid();
-    });
-});
-
-document.getElementById('mAction').addEventListener('click', function () {
-
-    var order = findOrder(state.selectedId);
-
-    if (order) {
-        advance(order);
-    }
-
-});
-
-document.getElementById('orderModal').addEventListener('hidden.bs.modal', function () {
-    state.selectedId = null;
-});
-
-// Pesanan baru dari kasir muncul otomatis
-setInterval(function () {
-
-    if (!document.hidden && !state.busy) {
-        loadOrders().catch(function () {});
-    }
-
-}, 15000);
-
-loadOrders().catch(function (err) {
-
-    document.getElementById('lastUpdate').textContent = 'Gagal memuat pesanan.';
-    toast(err.message, true);
-
-});
-
-</script>
+<?php if ($flash): ?>
+    <!-- Toast: tampil sekali, hilang saat halaman dimuat ulang (maks. 15 detik) -->
+    <div class="ord-toast show<?= $flash['error'] ? ' error' : '' ?>" role="status"><?= e($flash['message']) ?></div>
+<?php endif; ?>
 
 </body>
 </html>

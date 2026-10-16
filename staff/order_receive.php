@@ -23,6 +23,11 @@ function e($value): string
     return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
 }
 
+function rupiah($number): string
+{
+    return 'Rp ' . number_format((float)$number, 0, ',', '.');
+}
+
 function getColumnNames(mysqli $conn, string $table): array
 {
     // Nama tabel selalu konstanta di file ini.
@@ -73,29 +78,138 @@ function enumValue(mysqli $conn, string $table, string $column, string $wanted):
     );
 }
 
-/*
- * ALUR STATUS
- * Pending -> Processing -> Completed
- * Pesanan dari kasir (menu.php) disimpan dengan status 'Success' (sudah dibayar,
- * belum dibuat), jadi di sini dianggap Pending. Ubah di sini kalau berbeda.
- */
+/* ALUR STATUS */
 function normalizeStatus($raw): string
 {
     $key = strtolower(trim((string)$raw));
-
     if (in_array($key, ['processing', 'process', 'preparing'], true)) {
         return 'Processing';
     }
-
     if (in_array($key, ['completed', 'complete', 'done', 'selesai'], true)) {
         return 'Completed';
     }
-
     if (str_contains($key, 'cancel')) {
         return 'Cancelled';
     }
-
     return 'Pending'; // pending, success, paid, dll.
+}
+
+function statusClass(string $status): string
+{
+    return 'status-' . strtolower($status);
+}
+function ageText(int $minutes): string
+{
+    if ($minutes < 1) {
+        return 'Baru saja';
+    }
+
+    if ($minutes < 60) {
+        return $minutes . ' mnt lalu';
+    }
+
+    $hours = intdiv($minutes, 60);
+
+    return $hours < 24 ? $hours . ' jam lalu' : intdiv($hours, 24) . ' hari lalu';
+}
+
+function isLate(array $order): bool
+{
+    return $order['status'] === 'Pending' && $order['age'] >= 10;
+}
+
+function timeText(array $order, string $scope): string
+{
+    return ($scope === 'all' && $order['date'] !== '' ? $order['date'] . ' ' : '') . $order['time'];
+}
+
+// Langkah berikutnya untuk sebuah pesanan
+function nextAction(array $order): ?array
+{
+    if ($order['status'] === 'Pending') {
+        return ['target' => 'Processing', 'label' => 'Proses', 'icon' => 'fa-play', 'long' => 'Proses Pesanan'];
+    }
+
+    if ($order['status'] === 'Processing') {
+        return ['target' => 'Completed', 'label' => 'Selesai', 'icon' => 'fa-check', 'long' => 'Tandai Selesai'];
+    }
+
+    return null;
+}
+
+// (dulu di JS) filter, pencarian, dan urutan antrian
+function matchesOrder(array $order, string $filter, string $keyword): bool
+{
+    if ($filter !== 'All' && $order['status'] !== $filter) {
+        return false;
+    }
+
+    if ($keyword === '') {
+        return true;
+    }
+
+    $text = $order['number'] . ' ' . $order['customer'] . ' ' . implode(' ', array_column($order['items'], 'name'));
+
+    return mb_stripos($text, $keyword) !== false;
+}
+
+// Antrian: Pending -> Processing (paling lama dulu), lalu yang sudah selesai (terbaru dulu)
+function sortOrders(array $list): array
+{
+    $rank = ['Pending' => 0, 'Processing' => 1, 'Completed' => 2, 'Cancelled' => 3];
+
+    usort($list, function ($a, $b) use ($rank) {
+        $diff = $rank[$a['status']] - $rank[$b['status']];
+
+        if ($diff !== 0) {
+            return $diff;
+        }
+
+        return in_array($a['status'], ['Completed', 'Cancelled'], true)
+            ? $b['id'] <=> $a['id']
+            : $a['id'] <=> $b['id'];
+    });
+
+    return $list;
+}
+
+// STATE HALAMAN (filter, scope, pencarian, pesanan terpilih) dibawa lewat URL
+function readState(array $src): array
+{
+    $filter = (string)($src['filter'] ?? 'All');
+    $order  = filter_var($src['order'] ?? null, FILTER_VALIDATE_INT);
+
+    return [
+        'filter' => in_array($filter, ['All', 'Pending', 'Processing', 'Completed'], true) ? $filter : 'All',
+        'scope'  => ($src['scope'] ?? 'today') === 'all' ? 'all' : 'today',
+        'q'      => mb_substr(trim((string)($src['q'] ?? '')), 0, 100),
+        'order'  => ($order && $order > 0) ? $order : 0
+    ];
+}
+
+function buildUrl(array $state, array $override = []): string
+{
+    $params = array_merge($state, $override);
+
+    if ($params['filter'] === 'All') unset($params['filter']);
+    if ($params['scope'] === 'today') unset($params['scope']);
+    if ($params['q'] === '')          unset($params['q']);
+    if (empty($params['order']))      unset($params['order']);
+
+    return 'order_receive.php' . ($params ? '?' . http_build_query($params) : '');
+}
+
+function stateInputs(array $state): string
+{
+    $html = '';
+
+    foreach (['filter', 'scope', 'q', 'order'] as $key) {
+        if (!empty($state[$key])) {
+            $html .= '<input type="hidden" name="' . e($key) . '" value="' . e($state[$key]) . '">';
+        }
+    }
+
+    return $html;
 }
 
 // DETEKSI KOLOM
@@ -209,28 +323,10 @@ function loadOrders(mysqli $conn, array $cfg, string $scope): array
     return $orders;
 }
 
-$jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE;
-
-// REFRESH DATA (dipanggil JS)
-if (isset($_GET['fetch_orders'])) {
-
-    header('Content-Type: application/json; charset=utf-8');
-
-    try {
-        $scope = ($_GET['scope'] ?? 'today') === 'all' ? 'all' : 'today';
-
-        echo json_encode(['ok' => true, 'orders' => loadOrders($conn, $cfg, $scope)], JSON_UNESCAPED_UNICODE);
-    } catch (Throwable $err) {
-        echo json_encode(['ok' => false, 'message' => $err->getMessage()]);
-    }
-
-    exit;
-}
-
-// UPDATE STATUS (satu langkah maju saja)
+// UPDATE STATUS (POST biasa, lalu redirect balik ke halaman)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
 
-    header('Content-Type: application/json; charset=utf-8');
+    $backState = readState($_POST);
 
     try {
         $orderId = filter_input(INPUT_POST, 'order_id', FILTER_VALIDATE_INT);
@@ -267,22 +363,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         $stmt->execute();
         $stmt->close();
 
-        echo json_encode(['ok' => true, 'status' => $target]);
+        $_SESSION['flash'] = [
+            'message' => '#ORD-' . str_pad((string)$orderId, 3, '0', STR_PAD_LEFT) . ' → ' . $target,
+            'error'   => false
+        ];
 
     } catch (Throwable $err) {
-        echo json_encode(['ok' => false, 'message' => $err->getMessage()]);
+        $_SESSION['flash'] = ['message' => $err->getMessage(), 'error' => true];
     }
 
+    // Post/Redirect/Get: refresh browser tidak mengirim ulang form
+    header('Location: ' . buildUrl($backState));
     exit;
 }
 
-$initialOrders = loadOrders($conn, $cfg, 'today');
+// DATA UNTUK TAMPILAN
+$state    = readState($_GET);
+$filter   = $state['filter'];
+$scope    = $state['scope'];
+$keyword  = $state['q'];
+
+$orders = loadOrders($conn, $cfg, $scope);
+
+// Ringkasan & chip (dihitung dari semua pesanan pada scope, sebelum filter)
+$count = ['All' => count($orders), 'Pending' => 0, 'Processing' => 0, 'Completed' => 0];
+
+foreach ($orders as $order) {
+    if (isset($count[$order['status']])) {
+        $count[$order['status']]++;
+    }
+}
+
+$visible  = sortOrders(array_values(array_filter(
+    $orders,
+    fn($order) => matchesOrder($order, $filter, $keyword)
+)));
+
+// Pesanan yang dipilih untuk panel detail
+$selected = null;
+
+foreach ($orders as $order) {
+    if ($order['id'] === $state['order']) {
+        $selected = $order;
+        break;
+    }
+}
+
+// Pesan sekali tampil (toast)
+$flash = $_SESSION['flash'] ?? null;
+unset($_SESSION['flash']);
+
+$steps = ['Pending', 'Processing', 'Completed'];
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Pengganti setInterval JS: halaman dimuat ulang otomatis tiap 15 detik -->
+    <meta http-equiv="refresh" content="15">
     <title>Order Receive - LÜMA</title>
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
@@ -290,6 +429,17 @@ $initialOrders = loadOrders($conn, $cfg, 'today');
     <!-- menu.css = dasar tampilan (sidebar, topbar, kartu, filter); order_receive.css = tambahan khusus halaman ini -->
     <link rel="stylesheet" href="menu.css">
     <link rel="stylesheet" href="order_receive.css">
+
+    <style>
+        /* Filter/scope sekarang berupa link, bukan button */
+        a.filter-btn, a.scope-btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+        .ord-number a { color: inherit; text-decoration: none; }
+        .ord-number a:hover { text-decoration: underline; }
+        .ord-foot form { margin: 0; }
+        .ord-detail form { margin: 0; }
+        .search-box button { border: 0; background: none; padding: 0; color: inherit; cursor: pointer; }
+        .ord-link { font-size: 12px; text-decoration: none; opacity: .7; }
+    </style>
 </head>
 
 <body>
@@ -358,7 +508,7 @@ $initialOrders = loadOrders($conn, $cfg, 'today');
                         <div class="summary-icon"><i class="fa-solid fa-hourglass-half"></i></div>
                         <div>
                             <span class="summary-label">Pending</span>
-                            <strong class="summary-number" id="sumPending">0</strong>
+                            <strong class="summary-number"><?= $count['Pending'] ?></strong>
                         </div>
                     </article>
 
@@ -366,7 +516,7 @@ $initialOrders = loadOrders($conn, $cfg, 'today');
                         <div class="summary-icon"><i class="fa-solid fa-fire-burner"></i></div>
                         <div>
                             <span class="summary-label">Processing</span>
-                            <strong class="summary-number" id="sumProcessing">0</strong>
+                            <strong class="summary-number"><?= $count['Processing'] ?></strong>
                         </div>
                     </article>
 
@@ -374,7 +524,7 @@ $initialOrders = loadOrders($conn, $cfg, 'today');
                         <div class="summary-icon"><i class="fa-regular fa-circle-check"></i></div>
                         <div>
                             <span class="summary-label">Completed</span>
-                            <strong class="summary-number" id="sumCompleted">0</strong>
+                            <strong class="summary-number"><?= $count['Completed'] ?></strong>
                         </div>
                     </article>
 
@@ -382,7 +532,7 @@ $initialOrders = loadOrders($conn, $cfg, 'today');
                         <div class="summary-icon"><i class="fa-solid fa-receipt"></i></div>
                         <div>
                             <span class="summary-label">Total Orders</span>
-                            <strong class="summary-number" id="sumTotal">0</strong>
+                            <strong class="summary-number"><?= $count['All'] ?></strong>
                         </div>
                     </article>
 
@@ -397,39 +547,119 @@ $initialOrders = loadOrders($conn, $cfg, 'today');
 
                     <div class="menu-toolbar">
 
-                        <div class="filters" id="statusFilters">
-                            <button type="button" class="filter-btn active" data-status="All">All <span class="chip-count">0</span></button>
-                            <button type="button" class="filter-btn" data-status="Pending">Pending <span class="chip-count">0</span></button>
-                            <button type="button" class="filter-btn" data-status="Processing">Processing <span class="chip-count">0</span></button>
-                            <button type="button" class="filter-btn" data-status="Completed">Completed <span class="chip-count">0</span></button>
+                        <!-- FILTER STATUS -->
+                        <div class="filters">
+                            <?php foreach (['All', 'Pending', 'Processing', 'Completed'] as $status): ?>
+                                <a href="<?= e(buildUrl($state, ['filter' => $status, 'order' => 0])) ?>"
+                                   class="filter-btn <?= $filter === $status ? 'active' : '' ?>">
+                                    <?= e($status) ?> <span class="chip-count"><?= $count[$status] ?></span>
+                                </a>
+                            <?php endforeach; ?>
                         </div>
 
                         <div class="toolbar-right">
 
-                            <div class="scope-toggle" id="scopeToggle">
-                                <button type="button" class="scope-btn active" data-scope="today">Hari ini</button>
-                                <button type="button" class="scope-btn" data-scope="all">Semua</button>
+                            <!-- SCOPE -->
+                            <div class="scope-toggle">
+                                <a href="<?= e(buildUrl($state, ['scope' => 'today', 'order' => 0])) ?>"
+                                   class="scope-btn <?= $scope === 'today' ? 'active' : '' ?>">Hari ini</a>
+                                <a href="<?= e(buildUrl($state, ['scope' => 'all', 'order' => 0])) ?>"
+                                   class="scope-btn <?= $scope === 'all' ? 'active' : '' ?>">Semua</a>
                             </div>
 
-                            <div class="search-box">
-                                <i class="fa-solid fa-magnifying-glass"></i>
-                                <input type="text" id="searchInput" placeholder="Cari no. order / nama / menu...">
-                            </div>
+                            <!-- PENCARIAN -->
+                            <form method="get" action="order_receive.php" class="search-box">
+                                <?php if ($filter !== 'All'): ?><input type="hidden" name="filter" value="<?= e($filter) ?>"><?php endif; ?>
+                                <?php if ($scope !== 'today'): ?><input type="hidden" name="scope" value="<?= e($scope) ?>"><?php endif; ?>
+                                <button type="submit" aria-label="Cari"><i class="fa-solid fa-magnifying-glass"></i></button>
+                                <input type="text" name="q" value="<?= e($keyword) ?>" placeholder="Cari no. order / nama / menu...">
+                            </form>
 
-                            <button type="button" class="ingredient-btn" id="refreshBtn">
+                            <!-- REFRESH -->
+                            <a href="<?= e(buildUrl($state)) ?>" class="ingredient-btn" style="text-decoration:none">
                                 <i class="fa-solid fa-rotate"></i>
                                 Refresh
-                            </button>
+                            </a>
 
                         </div>
 
                     </div>
 
-                    <small class="live-status" id="lastUpdate"></small>
+                    <small class="live-status">
+                        Diperbarui <?= e(date('H:i:s')) ?> · otomatis tiap 15 detik
+                    </small>
 
-                    <div class="ord-grid" id="orderGrid"></div>
+                    <div class="ord-grid">
 
-                    <div class="empty-state hidden" id="noResult">
+                        <?php foreach ($visible as $order): ?>
+
+                            <?php $action = nextAction($order); ?>
+
+                            <article class="ord-card <?= e(statusClass($order['status'])) ?><?= $order['id'] === $state['order'] ? ' selected' : '' ?>">
+
+                                <div class="ord-head">
+                                    <strong class="ord-number">
+                                        <a href="<?= e(buildUrl($state, ['order' => $order['id']])) ?>"><?= e($order['number']) ?></a>
+                                    </strong>
+                                    <span class="status-badge <?= e(statusClass($order['status'])) ?>"><?= e($order['status']) ?></span>
+                                </div>
+
+                                <div class="ord-who">
+                                    <span class="ord-customer"><?= e($order['customer']) ?></span>
+                                    <?php if ($order['is_member']): ?>
+                                        <span class="member-chip">Member</span>
+                                    <?php endif; ?>
+                                </div>
+
+                                <div class="ord-meta">
+                                    <span class="type-badge"><?= e($order['type']) ?></span>
+                                    <?php if ($order['payment'] !== ''): ?>
+                                        <span class="type-badge"><?= e($order['payment']) ?></span>
+                                    <?php endif; ?>
+                                    <span class="ord-time<?= isLate($order) ? ' late' : '' ?>">
+                                        <?= e(timeText($order, $scope) . ' · ' . ageText($order['age'])) ?>
+                                    </span>
+                                </div>
+
+                                <ul class="ord-items">
+                                    <?php if (!$order['items']): ?>
+                                        <li class="more">Tidak ada item</li>
+                                    <?php endif; ?>
+
+                                    <?php foreach (array_slice($order['items'], 0, 3) as $item): ?>
+                                        <li><?= e($item['qty'] . '× ' . $item['name'] . ($item['size'] !== '' ? ' (' . $item['size'] . ')' : '')) ?></li>
+                                    <?php endforeach; ?>
+
+                                    <?php if (count($order['items']) > 3): ?>
+                                        <li class="more">+<?= count($order['items']) - 3 ?> item lainnya</li>
+                                    <?php endif; ?>
+                                </ul>
+
+                                <div class="ord-foot">
+                                    <strong class="ord-total"><?= e(rupiah($order['total'])) ?></strong>
+
+                                    <?php if ($action): ?>
+                                        <form method="post" action="order_receive.php">
+                                            <input type="hidden" name="update_status" value="1">
+                                            <input type="hidden" name="order_id" value="<?= (int)$order['id'] ?>">
+                                            <input type="hidden" name="status" value="<?= e($action['target']) ?>">
+                                            <?= stateInputs($state) ?>
+                                            <button type="submit" class="ord-action">
+                                                <i class="fa-solid <?= e($action['icon']) ?>"></i> <?= e($action['label']) ?>
+                                            </button>
+                                        </form>
+                                    <?php else: ?>
+                                        <span class="ord-done"><?= $order['status'] === 'Completed' ? 'Selesai' : e($order['status']) ?></span>
+                                    <?php endif; ?>
+                                </div>
+
+                            </article>
+
+                        <?php endforeach; ?>
+
+                    </div>
+
+                    <div class="empty-state<?= $visible ? ' hidden' : '' ?>">
                         <i class="fa-solid fa-mug-hot"></i>
                         <strong>No orders found</strong>
                         <span>Belum ada pesanan dengan filter ini.</span>
@@ -440,38 +670,86 @@ $initialOrders = loadOrders($conn, $cfg, 'today');
             </div>
 
             <!-- KOLOM KANAN: DETAIL PESANAN -->
-            <aside class="order-card ord-detail" id="detailPanel">
+            <aside class="order-card ord-detail<?= $selected ? ' open' : '' ?>" id="detailPanel">
 
                 <div class="detail-head">
                     <h3 class="order-title">Detail Pesanan</h3>
-                    <button type="button" class="detail-close" id="detailClose" aria-label="Tutup">
-                        <i class="fa-solid fa-xmark"></i>
-                    </button>
+
+                    <?php if ($selected): ?>
+                        <a href="<?= e(buildUrl($state, ['order' => 0])) ?>" class="detail-close" aria-label="Tutup" style="text-decoration:none">
+                            <i class="fa-solid fa-xmark"></i>
+                        </a>
+                    <?php endif; ?>
                 </div>
 
-                <p class="order-empty" id="detailEmpty">Pilih pesanan untuk melihat detailnya.</p>
+                <?php if (!$selected): ?>
 
-                <div class="detail-body hidden" id="detailBody">
+                    <p class="order-empty">Pilih pesanan untuk melihat detailnya.</p>
 
-                    <div class="detail-top">
-                        <strong class="detail-number" id="dNumber"></strong>
-                        <span class="status-badge" id="dStatus"></span>
+                <?php else: ?>
+
+                    <?php $action = nextAction($selected); ?>
+                    <?php $current = array_search($selected['status'], $steps, true); ?>
+
+                    <div class="detail-body">
+
+                        <div class="detail-top">
+                            <strong class="detail-number"><?= e($selected['number']) ?></strong>
+                            <span class="status-badge <?= e(statusClass($selected['status'])) ?>"><?= e($selected['status']) ?></span>
+                        </div>
+
+                        <?php if ($current !== false): ?>
+                            <div class="stepper">
+                                <?php foreach ($steps as $index => $name): ?>
+                                    <div class="step<?= $index < $current ? ' done' : '' ?><?= $index === $current ? ' active' : '' ?>">
+                                        <span class="step-dot"></span>
+                                        <small><?= e($name) ?></small>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+
+                        <dl class="detail-meta">
+                            <div><dt>Pelanggan</dt><dd><?= e($selected['customer'] . ($selected['is_member'] ? ' (Member)' : '')) ?></dd></div>
+                            <div><dt>Tipe</dt><dd><?= e($selected['type']) ?></dd></div>
+                            <div><dt>Waktu</dt><dd><?= e(timeText($selected, $scope) . ' · ' . ageText($selected['age'])) ?></dd></div>
+                            <div><dt>Pembayaran</dt><dd><?= e($selected['payment'] !== '' ? $selected['payment'] : '-') ?></dd></div>
+                        </dl>
+
+                        <div class="order-items">
+                            <?php if (!$selected['items']): ?>
+                                <p class="order-empty">Tidak ada item pada pesanan ini.</p>
+                            <?php endif; ?>
+
+                            <?php foreach ($selected['items'] as $item): ?>
+                                <div class="order-item">
+                                    <div class="order-item-info">
+                                        <strong><?= e($item['qty'] . '× ' . $item['name']) ?></strong>
+                                        <small><?= e(($item['size'] !== '' ? $item['size'] . ' · ' : '') . rupiah($item['price'])) ?></small>
+                                    </div>
+                                    <strong class="order-item-sub"><?= e(rupiah($item['subtotal'])) ?></strong>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+
+                        <div class="order-total">
+                            <span>Total</span>
+                            <strong><?= e(rupiah($selected['total'])) ?></strong>
+                        </div>
+
+                        <?php if ($action): ?>
+                            <form method="post" action="order_receive.php">
+                                <input type="hidden" name="update_status" value="1">
+                                <input type="hidden" name="order_id" value="<?= (int)$selected['id'] ?>">
+                                <input type="hidden" name="status" value="<?= e($action['target']) ?>">
+                                <?= stateInputs($state) ?>
+                                <button type="submit" class="pay-btn"><?= e($action['long']) ?></button>
+                            </form>
+                        <?php endif; ?>
+
                     </div>
 
-                    <div class="stepper" id="dStepper"></div>
-
-                    <dl class="detail-meta" id="dMeta"></dl>
-
-                    <div class="order-items" id="dItems"></div>
-
-                    <div class="order-total">
-                        <span>Total</span>
-                        <strong id="dTotal">Rp 0</strong>
-                    </div>
-
-                    <button type="button" class="pay-btn" id="dAction"></button>
-
-                </div>
+                <?php endif; ?>
 
             </aside>
 
@@ -481,553 +759,10 @@ $initialOrders = loadOrders($conn, $cfg, 'today');
 
 </div>
 
-<div class="ord-toast" id="ordToast" role="status"></div>
-
-<script>
-
-var orders = <?= json_encode($initialOrders, $jsonFlags) ?>;
-
-var state = {
-    filter: 'All',
-    scope: 'today',
-    keyword: '',
-    selectedId: null,
-    busy: false
-};
-
-var STATUS_RANK = { Pending: 0, Processing: 1, Completed: 2, Cancelled: 3 };
-
-
-// ==================================================
-// HELPER
-// ==================================================
-function el(tag, className, text) {
-
-    var node = document.createElement(tag);
-
-    if (className) {
-        node.className = className;
-    }
-
-    if (text !== undefined && text !== null) {
-        node.textContent = text;
-    }
-
-    return node;
-
-}
-
-function formatRupiah(number) {
-
-    return 'Rp ' + Math.round(number)
-        .toString()
-        .replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-
-}
-
-function statusClass(status) {
-    return 'status-' + status.toLowerCase();
-}
-
-function ageText(minutes) {
-
-    if (minutes < 1) {
-        return 'Baru saja';
-    }
-
-    if (minutes < 60) {
-        return minutes + ' mnt lalu';
-    }
-
-    var hours = Math.floor(minutes / 60);
-
-    return hours < 24 ? hours + ' jam lalu' : Math.floor(hours / 24) + ' hari lalu';
-
-}
-
-function timeText(order) {
-    return (state.scope === 'all' && order.date ? order.date + ' ' : '') + order.time;
-}
-
-function isLate(order) {
-    return order.status === 'Pending' && order.age >= 10;
-}
-
-function findOrder(id) {
-
-    for (var i = 0; i < orders.length; i++) {
-        if (orders[i].id === id) {
-            return orders[i];
-        }
-    }
-
-    return null;
-
-}
-
-// Langkah berikutnya untuk sebuah pesanan
-function nextAction(order) {
-
-    if (order.status === 'Pending') {
-        return { target: 'Processing', label: 'Proses', icon: 'fa-play' };
-    }
-
-    if (order.status === 'Processing') {
-        return { target: 'Completed', label: 'Selesai', icon: 'fa-check' };
-    }
-
-    return null;
-
-}
-
-var toastTimer;
-
-function toast(message, isError) {
-
-    var box = document.getElementById('ordToast');
-
-    box.textContent = message;
-    box.className = 'ord-toast show' + (isError ? ' error' : '');
-
-    clearTimeout(toastTimer);
-
-    toastTimer = setTimeout(function () {
-        box.className = 'ord-toast';
-    }, 3500);
-
-}
-
-
-// ==================================================
-// FILTER + SORT
-// ==================================================
-function matches(order) {
-
-    if (state.filter !== 'All' && order.status !== state.filter) {
-        return false;
-    }
-
-    if (!state.keyword) {
-        return true;
-    }
-
-    var text = order.number + ' ' + order.customer + ' ' + order.items.map(function (item) {
-        return item.name;
-    }).join(' ');
-
-    return text.toLowerCase().indexOf(state.keyword) !== -1;
-
-}
-
-// Antrian: Pending -> Processing (paling lama dulu), lalu yang sudah selesai (terbaru dulu)
-function sortOrders(list) {
-
-    return list.slice().sort(function (a, b) {
-
-        var rank = STATUS_RANK[a.status] - STATUS_RANK[b.status];
-
-        if (rank !== 0) {
-            return rank;
-        }
-
-        return a.status === 'Completed' || a.status === 'Cancelled' ? b.id - a.id : a.id - b.id;
-
-    });
-
-}
-
-
-// ==================================================
-// RENDER: RINGKASAN + CHIP
-// ==================================================
-function renderCounts() {
-
-    var count = { All: orders.length, Pending: 0, Processing: 0, Completed: 0 };
-
-    orders.forEach(function (order) {
-        if (count[order.status] !== undefined) {
-            count[order.status]++;
-        }
-    });
-
-    document.getElementById('sumPending').textContent = count.Pending;
-    document.getElementById('sumProcessing').textContent = count.Processing;
-    document.getElementById('sumCompleted').textContent = count.Completed;
-    document.getElementById('sumTotal').textContent = count.All;
-
-    document.querySelectorAll('#statusFilters .filter-btn').forEach(function (button) {
-        button.querySelector('.chip-count').textContent = count[button.dataset.status];
-        button.classList.toggle('active', button.dataset.status === state.filter);
-    });
-
-}
-
-
-// ==================================================
-// RENDER: KARTU PESANAN
-// ==================================================
-function buildCard(order) {
-
-    var card = el('article', 'ord-card ' + statusClass(order.status) + (order.id === state.selectedId ? ' selected' : ''));
-
-    card.dataset.id = order.id;
-    card.tabIndex = 0;
-    card.setAttribute('role', 'button');
-
-    var head = el('div', 'ord-head');
-    head.appendChild(el('strong', 'ord-number', order.number));
-    head.appendChild(el('span', 'status-badge ' + statusClass(order.status), order.status));
-
-    var who = el('div', 'ord-who');
-    who.appendChild(el('span', 'ord-customer', order.customer));
-
-    if (order.is_member) {
-        who.appendChild(el('span', 'member-chip', 'Member'));
-    }
-
-    var meta = el('div', 'ord-meta');
-    meta.appendChild(el('span', 'type-badge', order.type));
-
-    if (order.payment) {
-        meta.appendChild(el('span', 'type-badge', order.payment));
-    }
-
-    meta.appendChild(el('span', 'ord-time' + (isLate(order) ? ' late' : ''), timeText(order) + ' · ' + ageText(order.age)));
-
-    var list = el('ul', 'ord-items');
-
-    if (order.items.length === 0) {
-        list.appendChild(el('li', 'more', 'Tidak ada item'));
-    }
-
-    order.items.slice(0, 3).forEach(function (item) {
-        list.appendChild(el('li', '', item.qty + '× ' + item.name + (item.size ? ' (' + item.size + ')' : '')));
-    });
-
-    if (order.items.length > 3) {
-        list.appendChild(el('li', 'more', '+' + (order.items.length - 3) + ' item lainnya'));
-    }
-
-    var foot = el('div', 'ord-foot');
-    foot.appendChild(el('strong', 'ord-total', formatRupiah(order.total)));
-
-    var action = nextAction(order);
-
-    if (action) {
-
-        var button = el('button', 'ord-action');
-        button.type = 'button';
-        button.appendChild(el('i', 'fa-solid ' + action.icon));
-        button.appendChild(document.createTextNode(' ' + action.label));
-
-        button.addEventListener('click', function (event) {
-            event.stopPropagation();
-            advance(order);
-        });
-
-        foot.appendChild(button);
-
-    } else {
-        foot.appendChild(el('span', 'ord-done', order.status === 'Completed' ? 'Selesai' : order.status));
-    }
-
-    card.appendChild(head);
-    card.appendChild(who);
-    card.appendChild(meta);
-    card.appendChild(list);
-    card.appendChild(foot);
-
-    return card;
-
-}
-
-function renderGrid() {
-
-    var grid = document.getElementById('orderGrid');
-    var visible = sortOrders(orders.filter(matches));
-
-    grid.innerHTML = '';
-
-    visible.forEach(function (order) {
-        grid.appendChild(buildCard(order));
-    });
-
-    document.getElementById('noResult').classList.toggle('hidden', visible.length > 0);
-
-}
-
-
-// ==================================================
-// RENDER: PANEL DETAIL
-// ==================================================
-function renderDetail() {
-
-    var order = findOrder(state.selectedId);
-
-    document.getElementById('detailEmpty').classList.toggle('hidden', !!order);
-    document.getElementById('detailBody').classList.toggle('hidden', !order);
-
-    if (!order) {
-        return;
-    }
-
-    document.getElementById('dNumber').textContent = order.number;
-
-    var badge = document.getElementById('dStatus');
-    badge.className = 'status-badge ' + statusClass(order.status);
-    badge.textContent = order.status;
-
-    // Stepper
-    var steps = ['Pending', 'Processing', 'Completed'];
-    var current = steps.indexOf(order.status);
-    var stepper = document.getElementById('dStepper');
-
-    stepper.innerHTML = '';
-    stepper.classList.toggle('hidden', current === -1);
-
-    steps.forEach(function (name, index) {
-
-        var step = el('div', 'step' + (index < current ? ' done' : '') + (index === current ? ' active' : ''));
-
-        step.appendChild(el('span', 'step-dot'));
-        step.appendChild(el('small', '', name));
-        stepper.appendChild(step);
-
-    });
-
-    // Info
-    var meta = document.getElementById('dMeta');
-    var rows = [
-        ['Pelanggan', order.customer + (order.is_member ? ' (Member)' : '')],
-        ['Tipe', order.type],
-        ['Waktu', timeText(order) + ' · ' + ageText(order.age)],
-        ['Pembayaran', order.payment || '-']
-    ];
-
-    meta.innerHTML = '';
-
-    rows.forEach(function (row) {
-
-        var box = el('div');
-
-        box.appendChild(el('dt', '', row[0]));
-        box.appendChild(el('dd', '', row[1]));
-        meta.appendChild(box);
-
-    });
-
-    // Item
-    var items = document.getElementById('dItems');
-
-    items.innerHTML = '';
-
-    if (order.items.length === 0) {
-        items.appendChild(el('p', 'order-empty', 'Tidak ada item pada pesanan ini.'));
-    }
-
-    order.items.forEach(function (item) {
-
-        var row = el('div', 'order-item');
-        var info = el('div', 'order-item-info');
-
-        info.appendChild(el('strong', '', item.qty + '× ' + item.name));
-        info.appendChild(el('small', '', (item.size ? item.size + ' · ' : '') + formatRupiah(item.price)));
-
-        row.appendChild(info);
-        row.appendChild(el('strong', 'order-item-sub', formatRupiah(item.subtotal)));
-        items.appendChild(row);
-
-    });
-
-    document.getElementById('dTotal').textContent = formatRupiah(order.total);
-
-    // Tombol aksi
-    var button = document.getElementById('dAction');
-    var action = nextAction(order);
-
-    button.classList.toggle('hidden', !action);
-
-    if (action) {
-        button.textContent = action.target === 'Processing' ? 'Proses Pesanan' : 'Tandai Selesai';
-    }
-
-}
-
-function renderAll() {
-
-    if (state.selectedId !== null && !findOrder(state.selectedId)) {
-        state.selectedId = null;
-        document.getElementById('detailPanel').classList.remove('open');
-    }
-
-    renderCounts();
-    renderGrid();
-    renderDetail();
-
-}
-
-function selectOrder(id) {
-
-    state.selectedId = id;
-
-    document.querySelectorAll('.ord-card').forEach(function (card) {
-        card.classList.toggle('selected', Number(card.dataset.id) === id);
-    });
-
-    renderDetail();
-    document.getElementById('detailPanel').classList.add('open');
-
-}
-
-
-// ==================================================
-// DATA: REFRESH + UPDATE STATUS
-// ==================================================
-function loadOrders() {
-
-    return fetch('order_receive.php?fetch_orders=1&scope=' + state.scope)
-        .then(function (res) { return res.json(); })
-        .then(function (data) {
-
-            if (!data.ok) {
-                throw new Error(data.message || 'Gagal memuat pesanan.');
-            }
-
-            orders = data.orders;
-
-            document.getElementById('lastUpdate').textContent =
-                'Diperbarui ' + new Date().toLocaleTimeString('id-ID') + ' · otomatis tiap 15 detik';
-
-            renderAll();
-
-        });
-
-}
-
-function advance(order) {
-
-    var action = nextAction(order);
-
-    if (!action || state.busy) {
-        return;
-    }
-
-    if (action.target === 'Completed' && !confirm('Tandai ' + order.number + ' sebagai selesai?')) {
-        return;
-    }
-
-    var form = new FormData();
-
-    form.append('update_status', '1');
-    form.append('order_id', order.id);
-    form.append('status', action.target);
-
-    state.busy = true;
-
-    fetch('order_receive.php', { method: 'POST', body: form })
-        .then(function (res) { return res.json(); })
-        .then(function (data) {
-
-            if (!data.ok) {
-                toast(data.message || 'Status gagal diperbarui.', true);
-            } else {
-                toast(order.number + ' → ' + data.status);
-            }
-
-            return loadOrders();
-
-        })
-        .catch(function () {
-            toast('Koneksi gagal, coba lagi.', true);
-        })
-        .finally(function () {
-            state.busy = false;
-        });
-
-}
-
-
-// ==================================================
-// EVENT
-// ==================================================
-document.getElementById('orderGrid').addEventListener('click', function (event) {
-
-    var card = event.target.closest('.ord-card');
-
-    if (card) {
-        selectOrder(Number(card.dataset.id));
-    }
-
-});
-
-document.getElementById('orderGrid').addEventListener('keydown', function (event) {
-
-    if ((event.key === 'Enter' || event.key === ' ') && event.target.classList.contains('ord-card')) {
-        event.preventDefault();
-        selectOrder(Number(event.target.dataset.id));
-    }
-
-});
-
-document.querySelectorAll('#statusFilters .filter-btn').forEach(function (button) {
-    button.addEventListener('click', function () {
-        state.filter = button.dataset.status;
-        renderCounts();
-        renderGrid();
-    });
-});
-
-document.querySelectorAll('#scopeToggle .scope-btn').forEach(function (button) {
-
-    button.addEventListener('click', function () {
-
-        state.scope = button.dataset.scope;
-
-        document.querySelectorAll('#scopeToggle .scope-btn').forEach(function (item) {
-            item.classList.toggle('active', item === button);
-        });
-
-        loadOrders().catch(function (err) { toast(err.message, true); });
-
-    });
-
-});
-
-document.getElementById('searchInput').addEventListener('input', function () {
-    state.keyword = this.value.trim().toLowerCase();
-    renderGrid();
-});
-
-document.getElementById('refreshBtn').addEventListener('click', function () {
-    loadOrders().catch(function (err) { toast(err.message, true); });
-});
-
-document.getElementById('dAction').addEventListener('click', function () {
-
-    var order = findOrder(state.selectedId);
-
-    if (order) {
-        advance(order);
-    }
-
-});
-
-document.getElementById('detailClose').addEventListener('click', function () {
-    document.getElementById('detailPanel').classList.remove('open');
-});
-
-// Pesanan baru dari kasir muncul otomatis
-setInterval(function () {
-
-    if (!document.hidden && !state.busy) {
-        loadOrders().catch(function () {});
-    }
-
-}, 15000);
-
-renderAll();
-
-</script>
+<?php if ($flash): ?>
+    <!-- Toast: tampil sekali, hilang saat halaman dimuat ulang (maks. 15 detik) -->
+    <div class="ord-toast show<?= $flash['error'] ? ' error' : '' ?>" role="status"><?= e($flash['message']) ?></div>
+<?php endif; ?>
 
 </body>
 </html>

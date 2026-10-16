@@ -17,205 +17,9 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'staff') {
 
 $userName = $_SESSION['name'] ?? 'Staff';
 
-// SEARCH MEMBER
-if (isset($_GET['lookup_member'])) {
-
-    header('Content-Type: application/json; charset=utf-8');
-
-    try {
-        $phone = preg_replace('/\D/', '', (string)$_GET['lookup_member']);
-
-        $stmt = $conn->prepare("
-            SELECT u.user_id, u.name
-            FROM users u
-            INNER JOIN customer c ON c.user_id = u.user_id
-            WHERE u.phone = ?
-            LIMIT 1
-        ");
-        $stmt->bind_param("s", $phone);
-        $stmt->execute();
-        $member = $stmt->get_result()->fetch_assoc();
-        $stmt->close();
-
-        echo json_encode(
-            $member
-                ? ['found' => true, 'user_id' => (int)$member['user_id'], 'name' => $member['name']]
-                : ['found' => false]
-        );
-    } catch (Throwable $err) {
-        echo json_encode(['found' => false, 'error' => $err->getMessage()]);
-    }
-
-    exit;
-}
-
-// NILAI ENUM DI TABEL orders
-function enumValue(mysqli $conn, string $table, string $column, string $wanted): string
-{
-    $result = $conn->query("SHOW COLUMNS FROM `$table` LIKE '$column'");
-    $row    = $result ? $result->fetch_assoc() : null;
-
-    if (!$row || stripos((string)$row['Type'], 'enum(') !== 0) {
-        return $wanted;
-    }
-
-    preg_match_all("/'((?:[^']|'')*)'/", $row['Type'], $matches);
-
-    $normalize = fn($v) => strtolower(preg_replace('/\s+/', '', (string)$v));
-    $options   = array_map(fn($v) => str_replace("''", "'", $v), $matches[1]);
-
-    foreach ($options as $option) {
-        if ($normalize($option) === $normalize($wanted)) {
-            return $option;
-        }
-    }
-
-    throw new Exception(
-        "Nilai '$wanted' tidak ada di kolom $table.$column (pilihan: " . implode(', ', $options) . ")."
-    );
-}
-
-// AKUN WALK-IN
-function guestUserId(mysqli $conn): int
-{
-    $email = 'walkin@luma.local';
-
-    $stmt = $conn->prepare("SELECT user_id FROM users WHERE email = ? LIMIT 1");
-    $stmt->bind_param("s", $email);
-    $stmt->execute();
-    $row = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
-
-    if ($row) {
-        return (int)$row['user_id'];
-    }
-
-    $name     = 'Walk-in';
-    $password = bin2hex(random_bytes(8));
-    $phone    = '-';
-
-    $stmt = $conn->prepare("
-        INSERT INTO users (name, email, password, phone, created_at)
-        VALUES (?, ?, ?, ?, NOW())
-    ");
-    $stmt->bind_param("ssss", $name, $email, $password, $phone);
-    $stmt->execute();
-    $id = $conn->insert_id;
-    $stmt->close();
-
-    return (int)$id;
-}
-
-// DAFTARKAN MEMBER BARU 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register_member'])) {
-
-    header('Content-Type: application/json; charset=utf-8');
-
-    $started = false;
-
-    try {
-        $name    = trim((string)($_POST['name'] ?? ''));
-        $phone   = preg_replace('/\D/', '', (string)($_POST['phone'] ?? ''));
-        $gender  = (string)($_POST['gender'] ?? '');
-        $dob     = trim((string)($_POST['date_of_birth'] ?? ''));
-        $address = trim((string)($_POST['address'] ?? ''));
-        $email   = strtolower(trim((string)($_POST['email'] ?? '')));
-
-        if ($name === '' || mb_strlen($name) > 100) {
-            throw new Exception('Nama wajib diisi.');
-        }
-
-        if (strlen($phone) < 8 || strlen($phone) > 15) {
-            throw new Exception('No. HP tidak valid.');
-        }
-
-        if (!in_array($gender, ['L', 'P'], true)) {
-            throw new Exception('Pilih jenis kelamin.');
-        }
-
-        $dobDate = DateTime::createFromFormat('Y-m-d', $dob);
-
-        if (!$dobDate || $dobDate->format('Y-m-d') !== $dob || $dobDate > new DateTime('today')) {
-            throw new Exception('Tanggal lahir tidak valid.');
-        }
-
-        if ($address === '') {
-            $address = '-';
-        }
-
-        if ($email === '') {
-            $email = 'member-' . $phone . '@luma.local';
-        } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            throw new Exception('Format email tidak valid.');
-        }
-
-        // No. HP / email tidak boleh sudah terdaftar
-        $stmt = $conn->prepare("SELECT user_id FROM users WHERE phone = ? OR email = ? LIMIT 1");
-        $stmt->bind_param("ss", $phone, $email);
-        $stmt->execute();
-        $exists = $stmt->get_result()->fetch_assoc();
-        $stmt->close();
-
-        if ($exists) {
-            throw new Exception('No. HP atau email sudah terdaftar. Coba klik Cari.');
-        }
-
-        // Password acak: member dari kasir belum perlu login
-        $password = bin2hex(random_bytes(8));
-
-        $conn->begin_transaction();
-        $started = true;
-
-        $stmt = $conn->prepare("
-            INSERT INTO users (name, email, password, phone, created_at)
-            VALUES (?, ?, ?, ?, NOW())
-        ");
-        $stmt->bind_param("ssss", $name, $email, $password, $phone);
-        $stmt->execute();
-        $newUserId = $conn->insert_id;
-        $stmt->close();
-
-        $stmt = $conn->prepare("
-            INSERT INTO customer (user_id, gender, address, date_of_birth)
-            VALUES (?, ?, ?, ?)
-        ");
-        $stmt->bind_param("isss", $newUserId, $gender, $address, $dob);
-        $stmt->execute();
-        $stmt->close();
-
-        $conn->commit();
-
-        echo json_encode(['ok' => true, 'user_id' => (int)$newUserId, 'name' => $name]);
-
-    } catch (Throwable $err) {
-
-        if ($started) {
-            try {
-                $conn->rollback();
-            } catch (Throwable $ignore) {
-            }
-        }
-
-        echo json_encode(['ok' => false, 'message' => $err->getMessage()]);
-    }
-
-    exit;
-}
-
-// FOLDER GAMBAR MENU
-$imageFolder = "../assets/menu/";
-
-// ATURAN INGREDIENT -> MENU
-$ingredientRules = [
-    'Coffee Beans'  => ['categories' => [1]],
-    'Caramel Sauce' => ['keywords' => ['Caramel']],
-    'Vanilla Syrup' => ['keywords' => ['Vanilla']],
-    'Whipped Cream' => ['keywords' => ['Frappe', 'Cookies & Cream']],
-    'Ice Cubes'     => ['keywords' => ['Frappe', 'Smoothie', 'Soda', 'Blue Ocean']],
-    'Lemon'         => ['keywords' => ['Lemon', 'Soda']]
-];
-
-$rulesByName = array_change_key_case($ingredientRules, CASE_LOWER);
+// Keranjang & data kasir disimpan di SESSION (dulu di variabel JavaScript)
+$_SESSION['cart']       = $_SESSION['cart'] ?? [];
+$_SESSION['order_type'] = $_SESSION['order_type'] ?? 'Dine in';
 
 // HELPER FUNCTIONS
 function e($value): string
@@ -281,6 +85,141 @@ function menuUsesIngredient(array $menu, array $rule): bool
 
     return false;
 }
+
+// Gambar hanya dipakai kalau filenya benar-benar ada
+// (pengganti onerror="this.remove()" yang dulu memakai JavaScript)
+function menuImage(string $folder, $image): string
+{
+    $image = (string)$image;
+
+    return ($image !== '' && is_file(__DIR__ . '/' . $folder . $image)) ? $folder . $image : '';
+}
+
+// STATE HALAMAN (kategori, moment, pencarian) dibawa lewat URL
+function readState(array $src): array
+{
+    $cat    = (string)($src['cat'] ?? 'all');
+    $moment = filter_var($src['moment'] ?? null, FILTER_VALIDATE_INT);
+
+    return [
+        'cat'    => ($cat !== 'all' && ctype_digit($cat)) ? $cat : 'all',
+        'moment' => ($moment && $moment > 0) ? $moment : 0,
+        'q'      => mb_substr(trim((string)($src['q'] ?? '')), 0, 100)
+    ];
+}
+
+function buildUrl(array $state, array $extra = [], string $fragment = ''): string
+{
+    $params = $state;
+
+    if ($params['cat'] === 'all') unset($params['cat']);
+    if (empty($params['moment'])) unset($params['moment']);
+    if ($params['q'] === '')      unset($params['q']);
+
+    foreach ($extra as $key => $value) {
+        if ($value !== null && $value !== '' && $value !== 0) {
+            $params[$key] = $value;
+        }
+    }
+
+    return 'menu.php' . ($params ? '?' . http_build_query($params) : '') . ($fragment !== '' ? '#' . $fragment : '');
+}
+
+function stateInputs(array $state): string
+{
+    $html = '';
+
+    foreach (['cat', 'moment', 'q'] as $key) {
+        if (!empty($state[$key]) && $state[$key] !== 'all') {
+            $html .= '<input type="hidden" name="' . e($key) . '" value="' . e($state[$key]) . '">';
+        }
+    }
+
+    return $html;
+}
+
+function cartTotal(array $cart): float
+{
+    $total = 0.0;
+
+    foreach ($cart as $item) {
+        $total += (float)$item['price'] * (int)$item['qty'];
+    }
+
+    return $total;
+}
+
+// NILAI ENUM DI TABEL orders
+function enumValue(mysqli $conn, string $table, string $column, string $wanted): string
+{
+    $result = $conn->query("SHOW COLUMNS FROM `$table` LIKE '$column'");
+    $row    = $result ? $result->fetch_assoc() : null;
+
+    if (!$row || stripos((string)$row['Type'], 'enum(') !== 0) {
+        return $wanted;
+    }
+
+    preg_match_all("/'((?:[^']|'')*)'/", $row['Type'], $matches);
+
+    $normalize = fn($v) => strtolower(preg_replace('/\s+/', '', (string)$v));
+    $options   = array_map(fn($v) => str_replace("''", "'", $v), $matches[1]);
+
+    foreach ($options as $option) {
+        if ($normalize($option) === $normalize($wanted)) {
+            return $option;
+        }
+    }
+
+    throw new Exception(
+        "Nilai '$wanted' tidak ada di kolom $table.$column (pilihan: " . implode(', ', $options) . ")."
+    );
+}
+
+// AKUN WALK-IN
+function guestUserId(mysqli $conn): int
+{
+    $email = 'walkin@luma.local';
+
+    $stmt = $conn->prepare("SELECT user_id FROM users WHERE email = ? LIMIT 1");
+    $stmt->bind_param("s", $email);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if ($row) {
+        return (int)$row['user_id'];
+    }
+
+    $name     = 'Walk-in';
+    $password = bin2hex(random_bytes(8));
+    $phone    = '-';
+
+    $stmt = $conn->prepare("
+        INSERT INTO users (name, email, password, phone, created_at)
+        VALUES (?, ?, ?, ?, NOW())
+    ");
+    $stmt->bind_param("ssss", $name, $email, $password, $phone);
+    $stmt->execute();
+    $id = $conn->insert_id;
+    $stmt->close();
+
+    return (int)$id;
+}
+
+// FOLDER GAMBAR MENU
+$imageFolder = "../assets/menu/";
+
+// ATURAN INGREDIENT -> MENU
+$ingredientRules = [
+    'Coffee Beans'  => ['categories' => [1]],
+    'Caramel Sauce' => ['keywords' => ['Caramel']],
+    'Vanilla Syrup' => ['keywords' => ['Vanilla']],
+    'Whipped Cream' => ['keywords' => ['Frappe', 'Cookies & Cream']],
+    'Ice Cubes'     => ['keywords' => ['Frappe', 'Smoothie', 'Soda', 'Blue Ocean']],
+    'Lemon'         => ['keywords' => ['Lemon', 'Soda']]
+];
+
+$rulesByName = array_change_key_case($ingredientRules, CASE_LOWER);
 
 // DESKRIPSI MENU
 $menuDescriptions = [
@@ -357,7 +296,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_stock'])) {
         $stmt->close();
     }
 
-    header('Location: menu.php?open=ingredients');
+    header('Location: menu.php?panel=ingredients');
+    exit;
+}
+
+// SELESAI PESANAN: tutup struk, mulai pesanan baru
+if (isset($_GET['new_order'])) {
+    unset($_SESSION['receipt']);
+    header('Location: menu.php');
     exit;
 }
 
@@ -509,7 +455,7 @@ foreach ($menus as $menu) {
         'name'        => $menu['menu_name'],
         'category'    => $menu['category_name'],
         'description' => menuDescription($menu['menu_name'], $menu['category_name']),
-        'image'       => !empty($menu['image']) ? $imageFolder . $menu['image'] : '',
+        'image'       => menuImage($imageFolder, $menu['image']),
         'icon'        => categoryIcon($menu['category_name']),
         'price'       => (float)$menu['price'],
         'available'   => $menu['is_available'],
@@ -517,148 +463,6 @@ foreach ($menus as $menu) {
         'sizes'       => $sizes
     ];
 }
-
-// SIMPAN PESANAN 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['checkout'])) {
-
-    header('Content-Type: application/json; charset=utf-8');
-
-    $started = false;
-
-    try {
-        $cart      = json_decode($_POST['cart'] ?? '[]', true);
-        $orderType = $_POST['order_type'] ?? '';
-        $payment   = $_POST['payment_method'] ?? '';
-        $memberId  = filter_input(INPUT_POST, 'member_id', FILTER_VALIDATE_INT) ?: null;
-        $cashReceived = filter_input(INPUT_POST, 'cash_received', FILTER_VALIDATE_FLOAT);
-
-        if (!is_array($cart) || !$cart) {
-            throw new Exception('Pesanan masih kosong.');
-        }
-
-        if (!in_array($orderType, ['Dine in', 'Take away'], true)) {
-            throw new Exception('Tipe pesanan tidak valid.');
-        }
-
-        if (!in_array($payment, ['QRIS', 'Cash', 'Debit'], true)) {
-            throw new Exception('Pilih metode pembayaran.');
-        }
-
-        $lines = [];
-        $total = 0.0;
-
-        foreach ($cart as $item) {
-
-            $menuId = (int)($item['menu_id'] ?? 0);
-            $qty    = (int)($item['qty'] ?? 0);
-            $size   = (string)($item['size'] ?? '');
-
-            if (!isset($menuModalData[$menuId]) || $qty < 1 || $qty > 99) {
-                throw new Exception('Ada item yang tidak valid.');
-            }
-
-            $m = $menuModalData[$menuId];
-
-            if (!$m['available']) {
-                throw new Exception($m['name'] . ' sedang tidak tersedia.');
-            }
-
-            $price = (float)$m['price'];
-
-            foreach ($m['sizes'] as $s) {
-                if (strcasecmp($s['size'], $size) === 0) {
-                    $price = (float)$s['price'];
-                }
-            }
-
-            $subtotal = $price * $qty;
-            $total   += $subtotal;
-            $lines[]  = [$menuId, $qty, $price, $subtotal];
-        }
-
-        // Cash: uang diterima harus cukup
-        $change = 0.0;
-
-        if ($payment === 'Cash') {
-            if ($cashReceived === false || $cashReceived === null || $cashReceived < $total) {
-                throw new Exception('Uang diterima kurang dari total.');
-            }
-
-            $change = $cashReceived - $total;
-        }
-
-        // orders.user_id wajib: member terpilih, atau akun Walk-in
-        if ($memberId !== null) {
-            $stmt = $conn->prepare("SELECT user_id FROM customer WHERE user_id = ? LIMIT 1");
-            $stmt->bind_param("i", $memberId);
-            $stmt->execute();
-            $isMember = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-
-            if (!$isMember) {
-                throw new Exception('Member tidak valid, cari ulang member.');
-            }
-        }
-
-        $orderUserId = $memberId ?? guestUserId($conn);
-
-        // Pesanan dari kasir sudah dibayar -> status 'Success'
-        $dbStatus  = enumValue($conn, 'orders', 'status', 'Success');
-        $dbType    = enumValue($conn, 'orders', 'order_type', $orderType === 'Take away' ? 'Take Away' : 'Dine In');
-        $dbPayment = enumValue($conn, 'orders', 'payment_method', $payment);
-
-        $conn->begin_transaction();
-        $started = true;
-
-        $stmt = $conn->prepare("
-            INSERT INTO orders (user_id, order_date, total_amount, status, order_type, payment_method)
-            VALUES (?, NOW(), ?, ?, ?, ?)
-        ");
-        $stmt->bind_param("idsss", $orderUserId, $total, $dbStatus, $dbType, $dbPayment);
-        $stmt->execute();
-        $orderId = $conn->insert_id;
-        $stmt->close();
-
-        $stmt = $conn->prepare("
-            INSERT INTO order_details (order_id, menu_id, quantity, price, subtotal)
-            VALUES (?, ?, ?, ?, ?)
-        ");
-
-        foreach ($lines as [$menuId, $qty, $price, $subtotal]) {
-            $stmt->bind_param("iiidd", $orderId, $menuId, $qty, $price, $subtotal);
-            $stmt->execute();
-        }
-
-        $stmt->close();
-        $conn->commit();
-
-        echo json_encode(['ok' => true, 'order_id' => $orderId, 'total' => $total, 'change' => $change]);
-
-    } catch (Throwable $err) {
-
-        if ($started) {
-            try {
-                $conn->rollback();
-            } catch (Throwable $ignore) {
-            }
-        }
-
-        echo json_encode(['ok' => false, 'message' => $err->getMessage()]);
-    }
-
-    exit;
-}
-
-// POPULAR MENU
-$popularMenus = array_filter($menus, function ($menu) {
-    return (int)$menu['total_sold'] > 0;
-});
-
-usort($popularMenus, function ($a, $b) {
-    return (int)$b['total_sold'] <=> (int)$a['total_sold'];
-});
-
-$popularMenus = array_slice($popularMenus, 0, 4);
 
 // MOMENTS + REKOMENDASI
 $moments = [];
@@ -684,36 +488,500 @@ while ($row = $resultRecommendations->fetch_assoc()) {
     $momentMenuIds[(int)$row['moment_id']][] = (int)$row['menu_id'];
 }
 
-// KARTU MENU (menampilkan chip size S / M / L)
-function renderMenuCard(array $menu, string $imageFolder): string
-{
-    global $menuModalData;
+// ==================================================
+// PROSES FORM (POST biasa, lalu redirect balik)
+// ==================================================
+$panelError = '';
+$memberOld  = [];
+$panel      = (string)($_GET['panel'] ?? ($_GET['open'] ?? ''));
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    $form      = (string)($_POST['form'] ?? '');
+    $backState = readState($_POST);
+
+    // ---- KARTU PESANAN: tipe, nama, member, qty, ke payment ----
+    if ($form === 'order') {
+
+        $_SESSION['customer_name'] = mb_substr(trim((string)($_POST['customer_name'] ?? '')), 0, 100);
+
+        $phone = preg_replace('/\D/', '', (string)($_POST['member_phone'] ?? ''));
+
+        // No. HP berubah -> member yang terpilih dilepas
+        if ($phone !== ($_SESSION['member_phone'] ?? '')) {
+            unset($_SESSION['member_id'], $_SESSION['member_name'], $_SESSION['member_msg']);
+        }
+
+        $_SESSION['member_phone'] = $phone;
+
+        $act   = (string)($_POST['act'] ?? 'save');
+        $extra = [];
+
+        if ($act === 'type_dine') {
+            $_SESSION['order_type'] = 'Dine in';
+
+        } elseif ($act === 'type_take') {
+            $_SESSION['order_type'] = 'Take away';
+
+        } elseif (preg_match('/^cart:(inc|dec):(\d+)$/', $act, $m)) {
+
+            $i = (int)$m[2];
+
+            if (isset($_SESSION['cart'][$i])) {
+                if ($m[1] === 'inc') {
+                    if ($_SESSION['cart'][$i]['qty'] < 99) {
+                        $_SESSION['cart'][$i]['qty']++;
+                    }
+                } elseif ($_SESSION['cart'][$i]['qty'] > 1) {
+                    $_SESSION['cart'][$i]['qty']--;
+                } else {
+                    array_splice($_SESSION['cart'], $i, 1);
+                }
+            }
+
+            $_SESSION['cart'] = array_values($_SESSION['cart']);
+
+        } elseif ($act === 'lookup') {
+
+            if ($phone !== '') {
+                $stmt = $conn->prepare("
+                    SELECT u.user_id, u.name
+                    FROM users u
+                    INNER JOIN customer c ON c.user_id = u.user_id
+                    WHERE u.phone = ?
+                    LIMIT 1
+                ");
+                $stmt->bind_param("s", $phone);
+                $stmt->execute();
+                $member = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+
+                if ($member) {
+                    $_SESSION['member_id']   = (int)$member['user_id'];
+                    $_SESSION['member_name'] = $member['name'];
+                    $_SESSION['member_msg']  = ['text' => 'Member: ' . $member['name'], 'cls' => 'ok'];
+                } else {
+                    unset($_SESSION['member_id'], $_SESSION['member_name']);
+                    $_SESSION['member_msg'] = ['text' => 'Member tidak ditemukan', 'cls' => 'error'];
+                }
+            }
+
+        } elseif ($act === 'new_member') {
+            $extra = ['panel' => 'member'];
+
+        } elseif ($act === 'pay' && $_SESSION['cart']) {
+            $extra = ['panel' => 'pay'];
+        }
+
+        header('Location: ' . buildUrl($backState, $extra, $extra ? '' : 'order-card'));
+        exit;
+    }
+
+    // ---- TAMBAH ITEM KE PESANAN (dari popup detail menu) ----
+    if ($form === 'add') {
+
+        $menuId = (int)($_POST['menu_id'] ?? 0);
+        $qty    = (int)($_POST['qty'] ?? 1);
+        $size   = (string)($_POST['size'] ?? '');
+
+        try {
+            if (!isset($menuModalData[$menuId])) {
+                throw new Exception('Menu tidak ditemukan.');
+            }
+
+            $m = $menuModalData[$menuId];
+
+            if (!$m['available']) {
+                throw new Exception($m['name'] . ' sedang tidak tersedia.');
+            }
+
+            $qty   = max(1, min(99, $qty));
+            $price = (float)$m['price'];
+
+            if ($m['sizes']) {
+                $found = false;
+
+                foreach ($m['sizes'] as $s) {
+                    if (strcasecmp($s['size'], $size) === 0) {
+                        $price = (float)$s['price'];
+                        $size  = $s['size'];
+                        $found = true;
+                    }
+                }
+
+                if (!$found) {
+                    throw new Exception('Pilih size dulu.');
+                }
+            } else {
+                $size = '';
+            }
+
+            $merged = false;
+
+            foreach ($_SESSION['cart'] as $i => $line) {
+                if ($line['menu_id'] === $menuId && $line['size'] === $size) {
+                    $_SESSION['cart'][$i]['qty'] = min($line['qty'] + $qty, 99);
+                    $merged = true;
+                    break;
+                }
+            }
+
+            if (!$merged) {
+                $_SESSION['cart'][] = [
+                    'menu_id' => $menuId,
+                    'name'    => $m['name'],
+                    'size'    => $size,
+                    'price'   => $price,
+                    'qty'     => $qty
+                ];
+            }
+
+            header('Location: ' . buildUrl($backState, [], 'order-card'));
+            exit;
+
+        } catch (Throwable $err) {
+            $_SESSION['flash'] = $err->getMessage();
+            header('Location: ' . buildUrl($backState, ['item' => $menuId]));
+            exit;
+        }
+    }
+
+    // ---- DAFTARKAN MEMBER BARU ----
+    if ($form === 'member') {
+
+        $started   = false;
+        $memberOld = $_POST;
+        $panel     = 'member';
+
+        try {
+            $name    = trim((string)($_POST['name'] ?? ''));
+            $phone   = preg_replace('/\D/', '', (string)($_POST['phone'] ?? ''));
+            $gender  = (string)($_POST['gender'] ?? '');
+            $dob     = trim((string)($_POST['date_of_birth'] ?? ''));
+            $address = trim((string)($_POST['address'] ?? ''));
+            $email   = strtolower(trim((string)($_POST['email'] ?? '')));
+
+            if ($name === '' || mb_strlen($name) > 100) {
+                throw new Exception('Nama wajib diisi.');
+            }
+
+            if (strlen($phone) < 8 || strlen($phone) > 15) {
+                throw new Exception('No. HP tidak valid.');
+            }
+
+            if (!in_array($gender, ['L', 'P'], true)) {
+                throw new Exception('Pilih jenis kelamin.');
+            }
+
+            $dobDate = DateTime::createFromFormat('Y-m-d', $dob);
+
+            if (!$dobDate || $dobDate->format('Y-m-d') !== $dob || $dobDate > new DateTime('today')) {
+                throw new Exception('Tanggal lahir tidak valid.');
+            }
+
+            if ($address === '') {
+                $address = '-';
+            }
+
+            if ($email === '') {
+                $email = 'member-' . $phone . '@luma.local';
+            } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                throw new Exception('Format email tidak valid.');
+            }
+
+            // No. HP / email tidak boleh sudah terdaftar
+            $stmt = $conn->prepare("SELECT user_id FROM users WHERE phone = ? OR email = ? LIMIT 1");
+            $stmt->bind_param("ss", $phone, $email);
+            $stmt->execute();
+            $exists = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if ($exists) {
+                throw new Exception('No. HP atau email sudah terdaftar. Coba klik Cari.');
+            }
+
+            // Password acak: member dari kasir belum perlu login
+            $password = bin2hex(random_bytes(8));
+
+            $conn->begin_transaction();
+            $started = true;
+
+            $stmt = $conn->prepare("
+                INSERT INTO users (name, email, password, phone, created_at)
+                VALUES (?, ?, ?, ?, NOW())
+            ");
+            $stmt->bind_param("ssss", $name, $email, $password, $phone);
+            $stmt->execute();
+            $newUserId = $conn->insert_id;
+            $stmt->close();
+
+            $stmt = $conn->prepare("
+                INSERT INTO customer (user_id, gender, address, date_of_birth)
+                VALUES (?, ?, ?, ?)
+            ");
+            $stmt->bind_param("isss", $newUserId, $gender, $address, $dob);
+            $stmt->execute();
+            $stmt->close();
+
+            $conn->commit();
+
+            $_SESSION['member_id']    = (int)$newUserId;
+            $_SESSION['member_name']  = $name;
+            $_SESSION['member_phone'] = $phone;
+            $_SESSION['member_msg']   = ['text' => 'Member baru: ' . $name, 'cls' => 'ok'];
+
+            header('Location: ' . buildUrl($backState, [], 'order-card'));
+            exit;
+
+        } catch (Throwable $err) {
+
+            if ($started) {
+                try {
+                    $conn->rollback();
+                } catch (Throwable $ignore) {
+                }
+            }
+
+            $panelError = $err->getMessage();
+        }
+    }
+
+    // ---- CHECKOUT: SIMPAN PESANAN ----
+    if ($form === 'checkout') {
+
+        $started = false;
+        $panel   = 'pay';
+
+        try {
+            $cart      = $_SESSION['cart'];
+            $orderType = (string)$_SESSION['order_type'];
+            $payment   = (string)($_POST['payment_method'] ?? '');
+            $memberId  = $_SESSION['member_id'] ?? null;
+
+            if (!$cart) {
+                throw new Exception('Pesanan masih kosong.');
+            }
+
+            if (!in_array($orderType, ['Dine in', 'Take away'], true)) {
+                throw new Exception('Tipe pesanan tidak valid.');
+            }
+
+            if (!in_array($payment, ['QRIS', 'Cash', 'Debit'], true)) {
+                throw new Exception('Pilih metode pembayaran.');
+            }
+
+            $lines    = [];
+            $snapshot = [];
+            $total    = 0.0;
+
+            // Harga selalu dihitung ulang dari database, bukan dari keranjang
+            foreach ($cart as $item) {
+
+                $menuId = (int)($item['menu_id'] ?? 0);
+                $qty    = (int)($item['qty'] ?? 0);
+                $size   = (string)($item['size'] ?? '');
+
+                if (!isset($menuModalData[$menuId]) || $qty < 1 || $qty > 99) {
+                    throw new Exception('Ada item yang tidak valid.');
+                }
+
+                $m = $menuModalData[$menuId];
+
+                if (!$m['available']) {
+                    throw new Exception($m['name'] . ' sedang tidak tersedia. Hapus dari pesanan dulu.');
+                }
+
+                $price = (float)$m['price'];
+
+                foreach ($m['sizes'] as $s) {
+                    if (strcasecmp($s['size'], $size) === 0) {
+                        $price = (float)$s['price'];
+                    }
+                }
+
+                $subtotal   = $price * $qty;
+                $total     += $subtotal;
+                $lines[]    = [$menuId, $qty, $price, $subtotal];
+                $snapshot[] = ['name' => $m['name'], 'size' => $size, 'price' => $price, 'qty' => $qty];
+            }
+
+            // Cash: uang diterima harus cukup
+            $change   = 0.0;
+            $received = 0.0;
+
+            if ($payment === 'Cash') {
+
+                $received = isset($_POST['exact'])
+                    ? $total
+                    : (float)preg_replace('/\D/', '', (string)($_POST['cash_received'] ?? ''));
+
+                if ($received < $total) {
+                    throw new Exception('Uang diterima kurang dari total (' . rupiah($total) . ').');
+                }
+
+                $change = $received - $total;
+            }
+
+            // orders.user_id wajib: member terpilih, atau akun Walk-in
+            if ($memberId !== null) {
+                $stmt = $conn->prepare("SELECT user_id FROM customer WHERE user_id = ? LIMIT 1");
+                $stmt->bind_param("i", $memberId);
+                $stmt->execute();
+                $isMember = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+
+                if (!$isMember) {
+                    throw new Exception('Member tidak valid, cari ulang member.');
+                }
+            }
+
+            $orderUserId = $memberId ?? guestUserId($conn);
+
+            // Pesanan dari kasir sudah dibayar -> status 'Success'
+            $dbStatus  = enumValue($conn, 'orders', 'status', 'Success');
+            $dbType    = enumValue($conn, 'orders', 'order_type', $orderType === 'Take away' ? 'Take Away' : 'Dine In');
+            $dbPayment = enumValue($conn, 'orders', 'payment_method', $payment);
+
+            $conn->begin_transaction();
+            $started = true;
+
+            $stmt = $conn->prepare("
+                INSERT INTO orders (user_id, order_date, total_amount, status, order_type, payment_method)
+                VALUES (?, NOW(), ?, ?, ?, ?)
+            ");
+            $stmt->bind_param("idsss", $orderUserId, $total, $dbStatus, $dbType, $dbPayment);
+            $stmt->execute();
+            $orderId = $conn->insert_id;
+            $stmt->close();
+
+            $stmt = $conn->prepare("
+                INSERT INTO order_details (order_id, menu_id, quantity, price, subtotal)
+                VALUES (?, ?, ?, ?, ?)
+            ");
+
+            foreach ($lines as [$menuId, $qty, $price, $subtotal]) {
+                $stmt->bind_param("iiidd", $orderId, $menuId, $qty, $price, $subtotal);
+                $stmt->execute();
+            }
+
+            $stmt->close();
+            $conn->commit();
+
+            // Data struk disimpan di session, lalu keranjang dikosongkan
+            $_SESSION['receipt'] = [
+                'id'       => $orderId,
+                'type'     => $orderType,
+                'customer' => ($_SESSION['customer_name'] ?? '') !== ''
+                    ? $_SESSION['customer_name']
+                    : ($_SESSION['member_name'] ?? '-'),
+                'items'    => $snapshot,
+                'total'    => $total,
+                'method'   => $payment,
+                'received' => $received,
+                'change'   => $change,
+                'date'     => date('d/m/Y H:i:s')
+            ];
+
+            $_SESSION['cart'] = [];
+            unset(
+                $_SESSION['member_id'],
+                $_SESSION['member_name'],
+                $_SESSION['member_phone'],
+                $_SESSION['member_msg'],
+                $_SESSION['customer_name']
+            );
+
+            header('Location: ' . buildUrl($backState, ['panel' => 'receipt']));
+            exit;
+
+        } catch (Throwable $err) {
+
+            if ($started) {
+                try {
+                    $conn->rollback();
+                } catch (Throwable $ignore) {
+                }
+            }
+
+            $panelError = $err->getMessage();
+        }
+    }
+}
+
+// ==================================================
+// DATA UNTUK TAMPILAN
+// ==================================================
+$state  = ($_SERVER['REQUEST_METHOD'] === 'POST') ? readState($_POST) : readState($_GET);
+$itemId = filter_var($_GET['item'] ?? null, FILTER_VALIDATE_INT) ?: 0;
+
+$cart      = $_SESSION['cart'];
+$cartSum   = cartTotal($cart);
+$orderType = $_SESSION['order_type'];
+$receipt   = $_SESSION['receipt'] ?? null;
+$memberMsg = $_SESSION['member_msg'] ?? null;
+
+$flash = $_SESSION['flash'] ?? null;
+unset($_SESSION['flash']);
+
+if (!in_array($panel, ['ingredients', 'member', 'pay', 'receipt'], true)) {
+    $panel = '';
+}
+
+if ($panel === 'pay' && !$cart)       $panel = '';
+if ($panel === 'receipt' && !$receipt) $panel = '';
+
+// Popup detail menu hanya tampil kalau tidak ada popup lain
+$modalMenu = ($panel === '' && $itemId && isset($menuModalData[$itemId])) ? $menuModalData[$itemId] : null;
+
+// POPULAR MENU
+$popularMenus = array_filter($menus, function ($menu) {
+    return (int)$menu['total_sold'] > 0;
+});
+
+usort($popularMenus, function ($a, $b) {
+    return (int)$b['total_sold'] <=> (int)$a['total_sold'];
+});
+
+$popularMenus = array_slice($popularMenus, 0, 4);
+
+// ALL MENU: filter kategori / moment + pencarian (dulu dikerjakan JavaScript)
+$momentIds = $state['moment'] ? ($momentMenuIds[$state['moment']] ?? []) : null;
+$keyword   = $state['q'];
+
+$filteredMenus = array_filter($menus, function ($menu) use ($state, $momentIds, $keyword) {
+
+    if ($momentIds !== null) {
+        $matchGroup = in_array((int)$menu['menu_id'], $momentIds, true);
+    } else {
+        $matchGroup = $state['cat'] === 'all' || (string)$menu['category_id'] === $state['cat'];
+    }
+
+    $matchName = $keyword === '' || mb_stripos($menu['menu_name'], $keyword) !== false;
+
+    return $matchGroup && $matchName;
+});
+
+// KARTU MENU (sekarang berupa link ke popup detail)
+function renderMenuCard(array $menu, array $state, array $menuModalData): string
+{
+    $data  = $menuModalData[(int)$menu['menu_id']] ?? [];
     $icon  = categoryIcon($menu['category_name']);
-    $sizes = $menuModalData[(int)$menu['menu_id']]['sizes'] ?? [];
+    $sizes = $data['sizes'] ?? [];
+    $image = $data['image'] ?? '';
 
     ob_start();
     ?>
-    <article
+    <a
+        href="<?= e(buildUrl($state, ['item' => (int)$menu['menu_id']])) ?>"
         class="menu-card <?= $menu['is_available'] ? '' : 'unavailable' ?>"
-        data-category="<?= (int)$menu['category_id'] ?>"
-        data-menu-id="<?= (int)$menu['menu_id'] ?>"
-        data-name="<?= e(strtolower($menu['menu_name'])) ?>"
-        role="button"
-        tabindex="0"
     >
 
         <div class="menu-image">
 
             <i class="fa-solid <?= e($icon) ?>"></i>
 
-            <?php if (!empty($menu['image'])): ?>
-                <img
-                    src="<?= e($imageFolder . $menu['image']) ?>"
-                    alt="<?= e($menu['menu_name']) ?>"
-                    loading="lazy"
-                    onerror="this.remove()"
-                >
+            <?php if ($image !== ''): ?>
+                <img src="<?= e($image) ?>" alt="<?= e($menu['menu_name']) ?>" loading="lazy">
             <?php endif; ?>
 
             <?php if ($menu['is_available']): ?>
@@ -756,7 +1024,7 @@ function renderMenuCard(array $menu, string $imageFolder): string
 
         </div>
 
-    </article>
+    </a>
     <?php
     return ob_get_clean();
 }
@@ -771,6 +1039,28 @@ function renderMenuCard(array $menu, string $imageFolder): string
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="menu.css">
+
+    <style>
+        /* Tombol/kartu sekarang berupa link atau label, bukan button */
+        a.menu-card { display: block; color: inherit; text-decoration: none; }
+        a.filter-btn { display: inline-flex; align-items: center; text-decoration: none; }
+        a.moment-card { color: inherit; text-decoration: none; }
+        a.close-btn { display: inline-block; text-align: center; text-decoration: none; }
+        a.ingredient-btn, a.see-all { text-decoration: none; }
+
+        /* Pilihan size / metode bayar tanpa JavaScript (radio) */
+        .size-pick { position: relative; display: inline-block; }
+        .size-pick input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+        .size-pick input:checked + .size-btn { outline: 2px solid #6f4e37; outline-offset: -2px; font-weight: 700; }
+        .size-pick input:disabled + .size-btn { opacity: .5; }
+
+        /* Popup berbasis CSS saja (Bootstrap modal tanpa Bootstrap JS) */
+        .modal.show.d-block { overflow-y: auto; }
+        .order-card form { margin: 0; }
+        .hidden-submit { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+        .order-item-qty button { cursor: pointer; }
+        .search-box button { border: 0; background: none; padding: 0; color: inherit; cursor: pointer; }
+    </style>
 </head>
 
 <body>
@@ -829,6 +1119,10 @@ function renderMenuCard(array $menu, string $imageFolder): string
 
         </header>
 
+        <?php if ($flash): ?>
+            <div class="alert alert-danger m-3" role="alert"><?= e($flash) ?></div>
+        <?php endif; ?>
+
         <div class="menu-columns">
 
             <!-- KOLOM KIRI: POPULAR + ALL MENU -->
@@ -847,7 +1141,7 @@ function renderMenuCard(array $menu, string $imageFolder): string
                         <?php if ($popularMenus): ?>
 
                             <?php foreach ($popularMenus as $menu): ?>
-                                <?= renderMenuCard($menu, $imageFolder) ?>
+                                <?= renderMenuCard($menu, $state, $menuModalData) ?>
                             <?php endforeach; ?>
 
                         <?php else: ?>
@@ -865,7 +1159,7 @@ function renderMenuCard(array $menu, string $imageFolder): string
                 </section>
 
                 <!-- ALL MENU -->
-                <section class="menu-section">
+                <section class="menu-section" id="all-menu">
 
                     <div class="section-heading">
                         <h2>All Menu</h2>
@@ -874,40 +1168,41 @@ function renderMenuCard(array $menu, string $imageFolder): string
 
                     <div class="menu-toolbar">
 
+                        <!-- FILTER KATEGORI -->
                         <div class="filters">
 
-                            <button type="button" class="filter-btn active" data-category="all">All</button>
+                            <a
+                                href="<?= e(buildUrl(array_merge($state, ['cat' => 'all', 'moment' => 0]), [], 'all-menu')) ?>"
+                                class="filter-btn <?= ($state['moment'] === 0 && $state['cat'] === 'all') ? 'active' : '' ?>"
+                            >All</a>
 
                             <?php foreach ($categories as $category): ?>
-                                <button
-                                    type="button"
-                                    class="filter-btn"
-                                    data-category="<?= (int)$category['category_id'] ?>"
-                                ><?= e($category['category_name']) ?></button>
+                                <a
+                                    href="<?= e(buildUrl(array_merge($state, ['cat' => (string)$category['category_id'], 'moment' => 0]), [], 'all-menu')) ?>"
+                                    class="filter-btn <?= ($state['moment'] === 0 && $state['cat'] === (string)$category['category_id']) ? 'active' : '' ?>"
+                                ><?= e($category['category_name']) ?></a>
                             <?php endforeach; ?>
 
                         </div>
 
                         <div class="toolbar-right">
 
-                            <div class="search-box">
-                                <i class="fa-solid fa-magnifying-glass"></i>
-                                <input type="text" id="searchInput" placeholder="Search menu...">
-                            </div>
+                            <!-- PENCARIAN -->
+                            <form method="get" action="menu.php#all-menu" class="search-box">
+                                <?php if ($state['cat'] !== 'all'): ?><input type="hidden" name="cat" value="<?= e($state['cat']) ?>"><?php endif; ?>
+                                <?php if ($state['moment']): ?><input type="hidden" name="moment" value="<?= (int)$state['moment'] ?>"><?php endif; ?>
+                                <button type="submit" aria-label="Cari"><i class="fa-solid fa-magnifying-glass"></i></button>
+                                <input type="text" name="q" value="<?= e($keyword) ?>" placeholder="Search menu...">
+                            </form>
 
-                            <button
-                                type="button"
-                                class="ingredient-btn"
-                                data-bs-toggle="modal"
-                                data-bs-target="#ingredientModal"
-                            >
+                            <a href="<?= e(buildUrl($state, ['panel' => 'ingredients'])) ?>" class="ingredient-btn">
                                 <i class="fa-solid fa-box-open"></i>
                                 Ingredient Stock
 
                                 <?php if ($outCount > 0): ?>
                                     <span class="out-badge"><?= $outCount ?></span>
                                 <?php endif; ?>
-                            </button>
+                            </a>
 
                         </div>
 
@@ -926,13 +1221,16 @@ function renderMenuCard(array $menu, string $imageFolder): string
 
                             <?php foreach ($moments as $moment): ?>
 
-                                <?php [$momentIcon, $momentDesc] = momentInfo($moment['moment_name']); ?>
+                                <?php
+                                [$momentIcon, $momentDesc] = momentInfo($moment['moment_name']);
+                                $isActiveMoment = $state['moment'] === (int)$moment['moment_id'];
+                                // Klik lagi = matikan moment, kembali ke All
+                                $momentLink = $isActiveMoment
+                                    ? buildUrl(array_merge($state, ['cat' => 'all', 'moment' => 0]), [], 'all-menu')
+                                    : buildUrl(array_merge($state, ['moment' => (int)$moment['moment_id']]), [], 'all-menu');
+                                ?>
 
-                                <button
-                                    type="button"
-                                    class="moment-card"
-                                    data-moment="<?= (int)$moment['moment_id'] ?>"
-                                >
+                                <a href="<?= e($momentLink) ?>" class="moment-card <?= $isActiveMoment ? 'active' : '' ?>">
                                     <div class="menu-icon">
                                         <i class="fa-solid <?= e($momentIcon) ?>"></i>
                                     </div>
@@ -941,7 +1239,7 @@ function renderMenuCard(array $menu, string $imageFolder): string
                                         <strong><?= e($moment['moment_name']) ?></strong>
                                         <small><?= e($momentDesc) ?></small>
                                     </div>
-                                </button>
+                                </a>
 
                             <?php endforeach; ?>
 
@@ -950,12 +1248,12 @@ function renderMenuCard(array $menu, string $imageFolder): string
                     <?php endif; ?>
 
                     <div class="menu-grid" id="allMenuGrid">
-                        <?php foreach ($menus as $menu): ?>
-                            <?= renderMenuCard($menu, $imageFolder) ?>
+                        <?php foreach ($filteredMenus as $menu): ?>
+                            <?= renderMenuCard($menu, $state, $menuModalData) ?>
                         <?php endforeach; ?>
                     </div>
 
-                    <div class="empty-state hidden" id="noResult">
+                    <div class="empty-state<?= $filteredMenus ? ' hidden' : '' ?>">
                         <i class="fa-solid fa-mug-hot"></i>
                         <strong>No menu found</strong>
                         <span>Try another keyword, category, or moment.</span>
@@ -966,35 +1264,83 @@ function renderMenuCard(array $menu, string $imageFolder): string
             </div>
 
             <!-- KOLOM KANAN: CARD PESANAN -->
-            <aside class="order-card">
+            <aside class="order-card" id="order-card">
 
                 <h3 class="order-title">Pesanan</h3>
 
-                <div class="order-type">
-                    <button type="button" class="order-type-btn active" data-type="Dine in">Dine in</button>
-                    <button type="button" class="order-type-btn" data-type="Take away">Take away</button>
-                </div>
+                <form method="post" action="menu.php">
 
-                <input type="text" id="customerName" class="order-input" placeholder="Nama pelanggan (opsional)">
+                    <input type="hidden" name="form" value="order">
+                    <?= stateInputs($state) ?>
 
-                <div class="order-items" id="orderItems"></div>
-                <p class="order-empty" id="orderEmpty">Belum ada item</p>
+                    <!-- Tombol default saat menekan Enter di kolom teks -->
+                    <button type="submit" name="act" value="save" class="hidden-submit" tabindex="-1" aria-hidden="true">Simpan</button>
 
-                <div class="member-row">
-                    <input type="text" id="memberPhone" class="order-input" placeholder="No. HP member">
-                    <button type="button" class="member-btn" id="memberSearch">Cari</button>
-                </div>
-                <small class="member-result" id="memberResult"></small>
-                <button type="button" class="member-new-btn" id="newMemberBtn">
-                    <i class="fa-solid fa-user-plus"></i> Daftarkan member baru
-                </button>
+                    <div class="order-type">
+                        <button type="submit" name="act" value="type_dine" class="order-type-btn <?= $orderType === 'Dine in' ? 'active' : '' ?>">Dine in</button>
+                        <button type="submit" name="act" value="type_take" class="order-type-btn <?= $orderType === 'Take away' ? 'active' : '' ?>">Take away</button>
+                    </div>
 
-                <div class="order-total">
-                    <span>Total</span>
-                    <strong id="orderTotal">Rp 0</strong>
-                </div>
+                    <input
+                        type="text"
+                        name="customer_name"
+                        class="order-input"
+                        maxlength="100"
+                        value="<?= e($_SESSION['customer_name'] ?? '') ?>"
+                        placeholder="Nama pelanggan (opsional)"
+                    >
 
-                <button type="button" class="pay-btn" id="payBtn" disabled>Payment</button>
+                    <div class="order-items">
+
+                        <?php foreach ($cart as $index => $item): ?>
+
+                            <div class="order-item">
+
+                                <div class="order-item-info">
+                                    <strong><?= e($item['name']) ?></strong>
+                                    <small><?= e(($item['size'] !== '' ? $item['size'] . ' · ' : '') . rupiah($item['price'])) ?></small>
+                                </div>
+
+                                <div class="order-item-qty">
+                                    <button type="submit" name="act" value="cart:dec:<?= (int)$index ?>" aria-label="Kurangi">−</button>
+                                    <span><?= (int)$item['qty'] ?></span>
+                                    <button type="submit" name="act" value="cart:inc:<?= (int)$index ?>" aria-label="Tambah">+</button>
+                                </div>
+
+                            </div>
+
+                        <?php endforeach; ?>
+
+                    </div>
+
+                    <p class="order-empty<?= $cart ? ' hidden' : '' ?>">Belum ada item</p>
+
+                    <div class="member-row">
+                        <input
+                            type="text"
+                            name="member_phone"
+                            class="order-input"
+                            inputmode="numeric"
+                            value="<?= e($_SESSION['member_phone'] ?? '') ?>"
+                            placeholder="No. HP member"
+                        >
+                        <button type="submit" name="act" value="lookup" class="member-btn">Cari</button>
+                    </div>
+
+                    <small class="member-result <?= e($memberMsg['cls'] ?? '') ?>"><?= e($memberMsg['text'] ?? '') ?></small>
+
+                    <button type="submit" name="act" value="new_member" class="member-new-btn">
+                        <i class="fa-solid fa-user-plus"></i> Daftarkan member baru
+                    </button>
+
+                    <div class="order-total">
+                        <span>Total</span>
+                        <strong><?= rupiah($cartSum) ?></strong>
+                    </div>
+
+                    <button type="submit" name="act" value="pay" class="pay-btn" <?= $cart ? '' : 'disabled' ?>>Payment</button>
+
+                </form>
 
             </aside>
 
@@ -1005,10 +1351,17 @@ function renderMenuCard(array $menu, string $imageFolder): string
 </div>
 
 
-<!-- =====================================================
-     MODAL INGREDIENT STOCK
-====================================================== -->
-<div class="modal fade" id="ingredientModal" tabindex="-1" aria-hidden="true">
+<?php
+// ==================================================
+// POPUP (modal Bootstrap, dibuka lewat parameter URL, tanpa JavaScript)
+// ==================================================
+$closeUrl = buildUrl($state);
+?>
+
+<?php if ($panel === 'ingredients'): ?>
+
+<!-- MODAL INGREDIENT STOCK -->
+<div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true">
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content detail-modal">
 
@@ -1018,7 +1371,7 @@ function renderMenuCard(array $menu, string $imageFolder): string
                     <small>Stock 0 makes every menu using it unavailable</small>
                 </div>
 
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                <a href="<?= e($closeUrl) ?>" class="btn-close btn-close-white" aria-label="Close"></a>
             </div>
 
             <div class="modal-body detail-modal-body">
@@ -1091,235 +1444,291 @@ function renderMenuCard(array $menu, string $imageFolder): string
             </div>
 
             <div class="modal-footer detail-modal-footer">
-                <button type="button" class="close-btn" data-bs-dismiss="modal">Close</button>
+                <a href="<?= e($closeUrl) ?>" class="close-btn">Close</a>
             </div>
 
         </div>
     </div>
 </div>
+<div class="modal-backdrop fade show"></div>
+
+<?php endif; ?>
 
 
-<!-- =====================================================
-     MODAL DETAIL MENU
-====================================================== -->
-<div class="modal fade" id="menuModal" tabindex="-1" aria-hidden="true">
+<?php if ($modalMenu): ?>
+
+<!-- MODAL DETAIL MENU -->
+<div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content detail-modal">
 
-            <div class="modal-header detail-modal-header">
-                <div>
-                    <h5 class="modal-title" id="menuModalTitle"></h5>
-                    <small id="menuModalCategory"></small>
+            <form method="post" action="menu.php">
+
+                <input type="hidden" name="form" value="add">
+                <input type="hidden" name="menu_id" value="<?= (int)$modalMenu['id'] ?>">
+                <?= stateInputs($state) ?>
+
+                <div class="modal-header detail-modal-header">
+                    <div>
+                        <h5 class="modal-title"><?= e($modalMenu['name']) ?></h5>
+                        <small><?= e($modalMenu['category']) ?></small>
+                    </div>
+
+                    <a href="<?= e($closeUrl) ?>" class="btn-close btn-close-white" aria-label="Close"></a>
                 </div>
 
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
+                <div class="modal-body detail-modal-body menu-modal-body">
 
-            <div class="modal-body detail-modal-body menu-modal-body">
+                    <div class="menu-image menu-modal-image">
+                        <i class="fa-solid <?= e($modalMenu['icon']) ?>"></i>
 
-                <div class="menu-image menu-modal-image" id="menuModalImage"></div>
+                        <?php if ($modalMenu['image'] !== ''): ?>
+                            <img src="<?= e($modalMenu['image']) ?>" alt="<?= e($modalMenu['name']) ?>">
+                        <?php endif; ?>
+                    </div>
 
-                <p class="menu-modal-desc" id="menuModalDesc"></p>
+                    <p class="menu-modal-desc"><?= e($modalMenu['description']) ?></p>
 
-                <div class="menu-modal-alert hidden" id="menuModalAlert"></div>
+                    <?php if (!$modalMenu['available']): ?>
+                        <div class="menu-modal-alert">Unavailable: <?= e($modalMenu['note']) ?></div>
+                    <?php endif; ?>
 
-                <!-- SIZE -->
-                <div class="menu-modal-group" id="menuSizeGroup">
-                    <span class="menu-modal-label">Size</span>
-                    <div class="size-options" id="menuSizeOptions"></div>
+                    <!-- SIZE -->
+                    <?php if ($modalMenu['sizes']): ?>
+                        <div class="menu-modal-group">
+                            <span class="menu-modal-label">Size</span>
+
+                            <div class="size-options">
+                                <?php foreach ($modalMenu['sizes'] as $sizeItem): ?>
+                                    <label class="size-pick">
+                                        <input
+                                            type="radio"
+                                            name="size"
+                                            value="<?= e($sizeItem['size']) ?>"
+                                            <?= strtolower($sizeItem['size']) === 'medium' ? 'checked' : '' ?>
+                                            <?= $modalMenu['available'] ? '' : 'disabled' ?>
+                                        >
+                                        <span class="size-btn">
+                                            <strong><?= e($sizeItem['size']) ?></strong>
+                                            <small><?= e(rupiah($sizeItem['price'])) ?></small>
+                                        </span>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
+                    <!-- QUANTITY -->
+                    <div class="menu-modal-group">
+
+                        <span class="menu-modal-label">Quantity</span>
+
+                        <div class="qty-stepper">
+                            <input
+                                type="number"
+                                name="qty"
+                                class="qty-input"
+                                value="1"
+                                min="1"
+                                max="99"
+                                aria-label="Quantity"
+                                <?= $modalMenu['available'] ? '' : 'disabled' ?>
+                            >
+                        </div>
+
+                    </div>
+
                 </div>
 
-                <!-- QUANTITY -->
-                <div class="menu-modal-group">
+                <div class="modal-footer detail-modal-footer">
+                    <a href="<?= e($closeUrl) ?>" class="close-btn close-btn-light">Close</a>
+                    <button type="submit" class="close-btn" <?= $modalMenu['available'] ? '' : 'disabled' ?>>Tambah ke Pesanan</button>
+                </div>
 
-                    <span class="menu-modal-label">Quantity</span>
+            </form>
 
-                    <div class="qty-stepper">
+        </div>
+    </div>
+</div>
+<div class="modal-backdrop fade show"></div>
 
-                        <button type="button" class="qty-btn" id="qtyMinus" aria-label="Decrease quantity">
-                            <i class="fa-solid fa-minus"></i>
-                        </button>
+<?php endif; ?>
+
+
+<?php if ($panel === 'member'): ?>
+
+<!-- MODAL MEMBER BARU -->
+<div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content detail-modal">
+
+            <form method="post" action="menu.php">
+
+                <input type="hidden" name="form" value="member">
+                <?= stateInputs($state) ?>
+
+                <div class="modal-header detail-modal-header">
+                    <div>
+                        <h5 class="modal-title">Member Baru</h5>
+                        <small>Data disimpan ke database pelanggan</small>
+                    </div>
+
+                    <a href="<?= e($closeUrl) ?>" class="btn-close btn-close-white" aria-label="Close"></a>
+                </div>
+
+                <div class="modal-body menu-modal-body">
+
+                    <div class="member-form">
+
+                        <div>
+                            <label class="menu-modal-label" for="newMemberName">Nama *</label>
+                            <input type="text" name="name" class="order-input" id="newMemberName" maxlength="100" autocomplete="off" value="<?= e($memberOld['name'] ?? '') ?>">
+                        </div>
+
+                        <div>
+                            <label class="menu-modal-label" for="newMemberPhone">No. HP *</label>
+                            <input type="text" name="phone" inputmode="numeric" class="order-input" id="newMemberPhone" autocomplete="off" value="<?= e($memberOld['phone'] ?? ($_SESSION['member_phone'] ?? '')) ?>">
+                        </div>
+
+                        <div class="member-form-row">
+
+                            <div>
+                                <label class="menu-modal-label" for="newMemberGender">Jenis kelamin *</label>
+                                <select name="gender" class="order-input" id="newMemberGender">
+                                    <option value="">Pilih</option>
+                                    <option value="P" <?= ($memberOld['gender'] ?? '') === 'P' ? 'selected' : '' ?>>Perempuan</option>
+                                    <option value="L" <?= ($memberOld['gender'] ?? '') === 'L' ? 'selected' : '' ?>>Laki-laki</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="menu-modal-label" for="newMemberDob">Tanggal lahir *</label>
+                                <input type="date" name="date_of_birth" class="order-input" id="newMemberDob" value="<?= e($memberOld['date_of_birth'] ?? '') ?>">
+                            </div>
+
+                        </div>
+
+                        <div>
+                            <label class="menu-modal-label" for="newMemberAddress">Alamat (opsional)</label>
+                            <input type="text" name="address" class="order-input" id="newMemberAddress" autocomplete="off" value="<?= e($memberOld['address'] ?? '') ?>">
+                        </div>
+
+                        <div>
+                            <label class="menu-modal-label" for="newMemberEmail">Email (opsional)</label>
+                            <input type="email" name="email" class="order-input" id="newMemberEmail" autocomplete="off" value="<?= e($memberOld['email'] ?? '') ?>">
+                        </div>
+
+                    </div>
+
+                    <?php if ($panelError !== ''): ?>
+                        <div class="menu-modal-alert pay-error"><?= e($panelError) ?></div>
+                    <?php endif; ?>
+
+                </div>
+
+                <div class="modal-footer detail-modal-footer">
+                    <a href="<?= e($closeUrl) ?>" class="close-btn close-btn-light">Batal</a>
+                    <button type="submit" class="close-btn">Simpan Member</button>
+                </div>
+
+            </form>
+
+        </div>
+    </div>
+</div>
+<div class="modal-backdrop fade show"></div>
+
+<?php endif; ?>
+
+
+<?php if ($panel === 'pay'): ?>
+
+<!-- MODAL PAYMENT -->
+<?php $chosenMethod = (string)($_POST['payment_method'] ?? 'Cash'); ?>
+
+<div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content detail-modal">
+
+            <form method="post" action="menu.php">
+
+                <input type="hidden" name="form" value="checkout">
+                <?= stateInputs($state) ?>
+
+                <div class="modal-header detail-modal-header">
+                    <div>
+                        <h5 class="modal-title">Payment</h5>
+                        <small><?= e($orderType) ?> · <?= count($cart) ?> item</small>
+                    </div>
+
+                    <a href="<?= e($closeUrl) ?>" class="btn-close btn-close-white" aria-label="Close"></a>
+                </div>
+
+                <div class="modal-body menu-modal-body">
+
+                    <div class="menu-modal-total pay-total">
+                        <span>Total</span>
+                        <strong><?= e(rupiah($cartSum)) ?></strong>
+                    </div>
+
+                    <span class="menu-modal-label">Metode pembayaran</span>
+
+                    <div class="size-options">
+                        <?php foreach (['Cash', 'QRIS', 'Debit'] as $method): ?>
+                            <label class="size-pick">
+                                <input type="radio" name="payment_method" value="<?= e($method) ?>" <?= $chosenMethod === $method ? 'checked' : '' ?>>
+                                <span class="size-btn"><strong><?= e($method) ?></strong></span>
+                            </label>
+                        <?php endforeach; ?>
+                    </div>
+
+                    <!-- KHUSUS CASH -->
+                    <div class="cash-section">
 
                         <input
                             type="number"
-                            class="qty-input"
-                            id="qtyInput"
-                            value="1"
-                            min="1"
-                            max="99"
-                            aria-label="Quantity"
+                            name="cash_received"
+                            class="order-input"
+                            min="0"
+                            step="1"
+                            inputmode="numeric"
+                            autocomplete="off"
+                            value="<?= e($_POST['cash_received'] ?? '') ?>"
+                            placeholder="Uang diterima (khusus Cash)"
                         >
 
-                        <button type="button" class="qty-btn" id="qtyPlus" aria-label="Increase quantity">
-                            <i class="fa-solid fa-plus"></i>
-                        </button>
+                        <label class="cash-change" style="cursor:pointer">
+                            <span>Uang pas</span>
+                            <input type="checkbox" name="exact" value="1" <?= isset($_POST['exact']) ? 'checked' : '' ?>>
+                        </label>
 
                     </div>
 
+                    <?php if ($panelError !== ''): ?>
+                        <div class="menu-modal-alert pay-error"><?= e($panelError) ?></div>
+                    <?php endif; ?>
+
                 </div>
 
-                <!-- TOTAL (menampilkan size + jumlah yang dipilih) -->
-                <div class="menu-modal-total">
-                    <span id="menuModalTotalLabel">Total</span>
-                    <strong id="menuModalTotal"></strong>
+                <div class="modal-footer detail-modal-footer">
+                    <a href="<?= e($closeUrl) ?>" class="close-btn close-btn-light">Batal</a>
+                    <button type="submit" class="close-btn">Confirm</button>
                 </div>
 
-            </div>
-
-            <div class="modal-footer detail-modal-footer">
-                <button type="button" class="close-btn close-btn-light" data-bs-dismiss="modal">Close</button>
-                <button type="button" class="close-btn" id="addToOrder">Tambah ke Pesanan</button>
-            </div>
+            </form>
 
         </div>
     </div>
 </div>
+<div class="modal-backdrop fade show"></div>
+
+<?php endif; ?>
 
 
-<!-- =====================================================
-     MODAL MEMBER BARU
-====================================================== -->
-<div class="modal fade" id="memberModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content detail-modal">
-
-            <div class="modal-header detail-modal-header">
-                <div>
-                    <h5 class="modal-title">Member Baru</h5>
-                    <small>Data disimpan ke database pelanggan</small>
-                </div>
-
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-
-            <div class="modal-body menu-modal-body">
-
-                <div class="member-form">
-
-                    <div>
-                        <label class="menu-modal-label" for="newMemberName">Nama *</label>
-                        <input type="text" class="order-input" id="newMemberName" maxlength="100" autocomplete="off">
-                    </div>
-
-                    <div>
-                        <label class="menu-modal-label" for="newMemberPhone">No. HP *</label>
-                        <input type="text" inputmode="numeric" class="order-input" id="newMemberPhone" autocomplete="off">
-                    </div>
-
-                    <div class="member-form-row">
-
-                        <div>
-                            <label class="menu-modal-label" for="newMemberGender">Jenis kelamin *</label>
-                            <select class="order-input" id="newMemberGender">
-                                <option value="">Pilih</option>
-                                <option value="P">Perempuan</option>
-                                <option value="L">Laki-laki</option>
-                            </select>
-                        </div>
-
-                        <div>
-                            <label class="menu-modal-label" for="newMemberDob">Tanggal lahir *</label>
-                            <input type="date" class="order-input" id="newMemberDob">
-                        </div>
-
-                    </div>
-
-                    <div>
-                        <label class="menu-modal-label" for="newMemberAddress">Alamat (opsional)</label>
-                        <input type="text" class="order-input" id="newMemberAddress" autocomplete="off">
-                    </div>
-
-                    <div>
-                        <label class="menu-modal-label" for="newMemberEmail">Email (opsional)</label>
-                        <input type="email" class="order-input" id="newMemberEmail" autocomplete="off">
-                    </div>
-
-                </div>
-
-                <div class="menu-modal-alert pay-error hidden" id="memberError"></div>
-
-            </div>
-
-            <div class="modal-footer detail-modal-footer">
-                <button type="button" class="close-btn close-btn-light" data-bs-dismiss="modal">Batal</button>
-                <button type="button" class="close-btn" id="memberSave">Simpan Member</button>
-            </div>
-
-        </div>
-    </div>
-</div>
-
-
-<!-- MODAL PAYMENT-->
-<div class="modal fade" id="payModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content detail-modal">
-
-            <div class="modal-header detail-modal-header">
-                <div>
-                    <h5 class="modal-title">Payment</h5>
-                    <small id="payModalSummary"></small>
-                </div>
-
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-
-            <div class="modal-body menu-modal-body">
-
-                <div class="menu-modal-total pay-total">
-                    <span>Total</span>
-                    <strong id="payModalTotal"></strong>
-                </div>
-
-                <span class="menu-modal-label">Metode pembayaran</span>
-
-                <div class="size-options" id="payMethods">
-                    <button type="button" class="size-btn" data-method="Cash"><strong>Cash</strong></button>
-                    <button type="button" class="size-btn" data-method="QRIS"><strong>QRIS</strong></button>
-                    <button type="button" class="size-btn" data-method="Debit"><strong>Debit</strong></button>
-                </div>
-
-                <!-- KHUSUS CASH -->
-                <div class="cash-section hidden" id="cashSection">
-
-                    <input
-                        type="text"
-                        inputmode="numeric"
-                        autocomplete="off"
-                        class="order-input"
-                        id="cashReceived"
-                        placeholder="Uang diterima"
-                    >
-
-                    <div class="cash-quick">
-                        <button type="button" class="cash-quick-btn" data-cash="exact">Pas</button>
-                        <button type="button" class="cash-quick-btn" data-cash="50000">50rb</button>
-                        <button type="button" class="cash-quick-btn" data-cash="100000">100rb</button>
-                    </div>
-
-                    <div class="cash-change">
-                        <span>Kembalian</span>
-                        <strong id="cashChange">-</strong>
-                    </div>
-
-                </div>
-
-                <div class="menu-modal-alert pay-error hidden" id="payError"></div>
-
-            </div>
-
-            <div class="modal-footer detail-modal-footer">
-                <button type="button" class="close-btn close-btn-light" data-bs-dismiss="modal">Batal</button>
-                <button type="button" class="close-btn" id="payConfirm" disabled>Confirm</button>
-            </div>
-
-        </div>
-    </div>
-</div>
-
+<?php if ($panel === 'receipt'): ?>
 
 <!-- MODAL STRUK -->
-<div class="modal fade" id="receiptModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+<div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true">
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content detail-modal">
 
@@ -1331,835 +1740,56 @@ function renderMenuCard(array $menu, string $imageFolder): string
             </div>
 
             <div class="modal-body menu-modal-body receipt-body">
-                <div class="receipt-paper" id="receiptPaper"></div>
+
+                <div class="receipt-paper">
+
+                    <div class="receipt-brand">LÜMA</div>
+                    <div class="receipt-line">Order #<?= (int)$receipt['id'] ?> · <?= e($receipt['type']) ?></div>
+                    <div class="receipt-line"><?= e($receipt['date']) ?></div>
+                    <div class="receipt-line">Pelanggan: <?= e($receipt['customer']) ?></div>
+
+                    <div class="receipt-dash"></div>
+
+                    <?php foreach ($receipt['items'] as $item): ?>
+                        <div class="receipt-row">
+                            <span><?= e($item['name'] . ($item['size'] !== '' ? ' ' . strtoupper(substr($item['size'], 0, 1)) : '') . ' ×' . $item['qty']) ?></span>
+                            <span><?= e(rupiah($item['price'] * $item['qty'])) ?></span>
+                        </div>
+                    <?php endforeach; ?>
+
+                    <div class="receipt-dash"></div>
+
+                    <div class="receipt-row bold">
+                        <span>Total</span>
+                        <span><?= e(rupiah($receipt['total'])) ?></span>
+                    </div>
+
+                    <?php if ($receipt['method'] === 'Cash'): ?>
+                        <div class="receipt-row"><span>Cash</span><span><?= e(rupiah($receipt['received'])) ?></span></div>
+                        <div class="receipt-row"><span>Kembali</span><span><?= e(rupiah($receipt['change'])) ?></span></div>
+                    <?php else: ?>
+                        <div class="receipt-row"><span>Bayar</span><span><?= e($receipt['method']) ?></span></div>
+                    <?php endif; ?>
+
+                    <div class="receipt-dash"></div>
+
+                    <div class="receipt-thanks">Terima kasih ☕</div>
+
+                </div>
+
             </div>
 
             <div class="modal-footer detail-modal-footer">
-                <button type="button" class="close-btn close-btn-light" id="printReceipt">
-                    <i class="fa-solid fa-print"></i> Print
-                </button>
-                <button type="button" class="close-btn" data-bs-dismiss="modal">New Order</button>
+                <!-- Cetak struk: gunakan Ctrl+P / menu Print di browser -->
+                <a href="menu.php?new_order=1" class="close-btn">New Order</a>
             </div>
 
         </div>
     </div>
 </div>
+<div class="modal-backdrop fade show"></div>
 
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
-
-<script>
-
-// FILTER: KATEGORI ATAU LUMA MOMENT (+ SEARCH)
-var momentMenus = <?= json_encode($momentMenuIds) ?>;
-
-var activeCategory = 'all';
-var activeMoment = null;
-
-function syncFilterUI() {
-
-    document.querySelectorAll('.filter-btn').forEach(function (item) {
-        item.classList.toggle(
-            'active',
-            activeMoment === null && item.dataset.category === String(activeCategory)
-        );
-    });
-
-    document.querySelectorAll('.moment-card').forEach(function (item) {
-        item.classList.toggle('active', item.dataset.moment === activeMoment);
-    });
-
-}
-
-function applyMenuFilter() {
-
-    var keyword = document.getElementById('searchInput').value.trim().toLowerCase();
-    var momentIds = activeMoment !== null ? (momentMenus[activeMoment] || []) : null;
-    var shown = 0;
-
-    document.querySelectorAll('#allMenuGrid .menu-card').forEach(function (card) {
-
-        var matchGroup;
-
-        if (momentIds !== null) {
-            matchGroup = momentIds.indexOf(parseInt(card.dataset.menuId, 10)) !== -1;
-        } else {
-            matchGroup = activeCategory === 'all' || card.dataset.category === String(activeCategory);
-        }
-
-        var matchName = card.dataset.name.indexOf(keyword) !== -1;
-        var visible = matchGroup && matchName;
-
-        card.classList.toggle('hidden', !visible);
-
-        if (visible) {
-            shown++;
-        }
-
-    });
-
-    document.getElementById('noResult').classList.toggle('hidden', shown > 0);
-
-}
-
-document.querySelectorAll('.filter-btn').forEach(function (button) {
-
-    button.addEventListener('click', function () {
-
-        activeMoment = null;
-        activeCategory = button.dataset.category;
-
-        syncFilterUI();
-        applyMenuFilter();
-
-    });
-
-});
-
-document.querySelectorAll('.moment-card').forEach(function (card) {
-
-    card.addEventListener('click', function () {
-
-        if (activeMoment === card.dataset.moment) {
-            // klik lagi = matikan moment, kembali ke All
-            activeMoment = null;
-            activeCategory = 'all';
-        } else {
-            activeMoment = card.dataset.moment;
-        }
-
-        syncFilterUI();
-        applyMenuFilter();
-
-    });
-
-});
-
-document.getElementById('searchInput').addEventListener('input', applyMenuFilter);
-
-
-// ==================================================
-// POPUP DETAIL MENU
-// ==================================================
-var menuData = <?= json_encode(
-    $menuModalData,
-    JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE
-) ?>;
-
-var menuModal = new bootstrap.Modal(document.getElementById('menuModal'));
-
-var currentMenu = null;
-var selectedSize = 0;
-var quantity = 1;
-
-function formatRupiah(number) {
-
-    return 'Rp ' + Math.round(number)
-        .toString()
-        .replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-
-}
-
-function currentPrice() {
-
-    if (currentMenu.sizes.length > 0) {
-        return currentMenu.sizes[selectedSize].price;
-    }
-
-    return currentMenu.price;
-
-}
-
-function renderTotal() {
-
-    var label = 'Total';
-
-    if (currentMenu.sizes.length > 0) {
-        label += ' · ' + currentMenu.sizes[selectedSize].size;
-    }
-
-    label += ' × ' + quantity;
-
-    document.getElementById('qtyInput').value = quantity;
-    document.getElementById('menuModalTotalLabel').textContent = label;
-    document.getElementById('menuModalTotal').textContent = formatRupiah(currentPrice() * quantity);
-
-}
-
-function renderSizes() {
-
-    var group = document.getElementById('menuSizeGroup');
-    var options = document.getElementById('menuSizeOptions');
-
-    options.innerHTML = '';
-
-    if (currentMenu.sizes.length === 0) {
-        group.classList.add('hidden');
-        return;
-    }
-
-    group.classList.remove('hidden');
-
-    currentMenu.sizes.forEach(function (item, index) {
-
-        var button = document.createElement('button');
-        var name = document.createElement('strong');
-        var price = document.createElement('small');
-
-        button.type = 'button';
-        button.className = 'size-btn' + (index === selectedSize ? ' active' : '');
-        button.disabled = !currentMenu.available;
-
-        name.textContent = item.size;
-        price.textContent = formatRupiah(item.price);
-
-        button.appendChild(name);
-        button.appendChild(price);
-
-        button.addEventListener('click', function () {
-            selectedSize = index;
-            renderSizes();
-            renderTotal();
-        });
-
-        options.appendChild(button);
-
-    });
-
-}
-
-function openMenuModal(menu) {
-
-    currentMenu = menu;
-    quantity = 1;
-    selectedSize = 0;
-
-    // Default size = Medium kalau ada
-    menu.sizes.forEach(function (item, index) {
-        if (String(item.size).toLowerCase() === 'medium') {
-            selectedSize = index;
-        }
-    });
-
-    document.getElementById('menuModalTitle').textContent = menu.name;
-    document.getElementById('menuModalCategory').textContent = menu.category;
-    document.getElementById('menuModalDesc').textContent = menu.description;
-
-    // Gambar (fallback ke icon kategori)
-    var imageBox = document.getElementById('menuModalImage');
-    var icon = document.createElement('i');
-
-    imageBox.innerHTML = '';
-
-    icon.className = 'fa-solid ' + menu.icon;
-    imageBox.appendChild(icon);
-
-    if (menu.image) {
-
-        var image = document.createElement('img');
-
-        image.src = menu.image;
-        image.alt = menu.name;
-        image.onerror = function () { image.remove(); };
-
-        imageBox.appendChild(image);
-
-    }
-
-    // Menu tidak tersedia
-    var alertBox = document.getElementById('menuModalAlert');
-
-    if (menu.available) {
-        alertBox.classList.add('hidden');
-    } else {
-        alertBox.textContent = 'Unavailable: ' + menu.note;
-        alertBox.classList.remove('hidden');
-    }
-
-    ['qtyMinus', 'qtyPlus', 'qtyInput', 'addToOrder'].forEach(function (id) {
-        document.getElementById(id).disabled = !menu.available;
-    });
-
-    renderSizes();
-    renderTotal();
-
-    menuModal.show();
-
-}
-
-// Klik card menu (card ada di beberapa section)
-document.addEventListener('click', function (event) {
-
-    var card = event.target.closest('.menu-card');
-
-    if (card && menuData[card.dataset.menuId]) {
-        openMenuModal(menuData[card.dataset.menuId]);
-    }
-
-});
-
-document.addEventListener('keydown', function (event) {
-
-    if (event.key !== 'Enter' && event.key !== ' ') {
-        return;
-    }
-
-    var card = event.target.closest ? event.target.closest('.menu-card') : null;
-
-    if (card && menuData[card.dataset.menuId]) {
-        event.preventDefault();
-        openMenuModal(menuData[card.dataset.menuId]);
-    }
-
-});
-
-// Quantity
-document.getElementById('qtyMinus').addEventListener('click', function () {
-    if (quantity > 1) {
-        quantity--;
-        renderTotal();
-    }
-});
-
-document.getElementById('qtyPlus').addEventListener('click', function () {
-    if (quantity < 99) {
-        quantity++;
-        renderTotal();
-    }
-});
-
-document.getElementById('qtyInput').addEventListener('change', function () {
-
-    var value = parseInt(this.value, 10);
-
-    quantity = isNaN(value) || value < 1 ? 1 : Math.min(value, 99);
-
-    renderTotal();
-
-});
-
-// CARD PESANAN
-var cart = [];
-var orderType = 'Dine in';
-var memberId = null;
-var memberName = '';
-var payMethod = '';
-
-var payModal = new bootstrap.Modal(document.getElementById('payModal'));
-
-function cartTotal() {
-
-    return cart.reduce(function (sum, item) {
-        return sum + item.price * item.qty;
-    }, 0);
-
-}
-
-function makeQtyButton(text, label, handler) {
-
-    var button = document.createElement('button');
-
-    button.type = 'button';
-    button.textContent = text;
-    button.setAttribute('aria-label', label);
-    button.addEventListener('click', handler);
-
-    return button;
-
-}
-
-function renderCart() {
-
-    var list = document.getElementById('orderItems');
-
-    list.innerHTML = '';
-
-    cart.forEach(function (item, index) {
-
-        var row = document.createElement('div');
-        var info = document.createElement('div');
-        var name = document.createElement('strong');
-        var meta = document.createElement('small');
-        var control = document.createElement('div');
-        var qty = document.createElement('span');
-
-        row.className = 'order-item';
-        info.className = 'order-item-info';
-        control.className = 'order-item-qty';
-
-        name.textContent = item.name;
-        meta.textContent = (item.size ? item.size + ' · ' : '') + formatRupiah(item.price);
-        qty.textContent = item.qty;
-
-        info.appendChild(name);
-        info.appendChild(meta);
-
-        control.appendChild(makeQtyButton('−', 'Kurangi', function () {
-            if (item.qty > 1) {
-                item.qty--;
-            } else {
-                cart.splice(index, 1);
-            }
-            renderCart();
-        }));
-
-        control.appendChild(qty);
-
-        control.appendChild(makeQtyButton('+', 'Tambah', function () {
-            if (item.qty < 99) {
-                item.qty++;
-                renderCart();
-            }
-        }));
-
-        row.appendChild(info);
-        row.appendChild(control);
-        list.appendChild(row);
-
-    });
-
-    document.getElementById('orderEmpty').classList.toggle('hidden', cart.length > 0);
-    document.getElementById('orderTotal').textContent = formatRupiah(cartTotal());
-    document.getElementById('payBtn').disabled = cart.length === 0;
-
-}
-
-// Tambah item dari popup menu
-document.getElementById('addToOrder').addEventListener('click', function () {
-
-    if (!currentMenu || !currentMenu.available) {
-        return;
-    }
-
-    var size = currentMenu.sizes.length > 0 ? currentMenu.sizes[selectedSize].size : '';
-
-    var existing = cart.find(function (item) {
-        return item.menu_id === currentMenu.id && item.size === size;
-    });
-
-    if (existing) {
-        existing.qty = Math.min(existing.qty + quantity, 99);
-    } else {
-        cart.push({
-            menu_id: currentMenu.id,
-            name: currentMenu.name,
-            size: size,
-            price: currentPrice(),
-            qty: quantity
-        });
-    }
-
-    renderCart();
-    menuModal.hide();
-
-});
-
-// Dine in / Take away
-document.querySelectorAll('.order-type-btn').forEach(function (button) {
-
-    button.addEventListener('click', function () {
-
-        orderType = button.dataset.type;
-
-        document.querySelectorAll('.order-type-btn').forEach(function (item) {
-            item.classList.toggle('active', item === button);
-        });
-
-    });
-
-});
-
-// Cari member
-function setMemberResult(text, cls) {
-
-    var box = document.getElementById('memberResult');
-
-    box.textContent = text;
-    box.className = 'member-result ' + (cls || '');
-
-}
-
-document.getElementById('memberPhone').addEventListener('input', function () {
-    memberId = null;
-    memberName = '';
-    setMemberResult('');
-});
-
-document.getElementById('memberSearch').addEventListener('click', function () {
-
-    var phone = document.getElementById('memberPhone').value.trim();
-
-    if (!phone) {
-        return;
-    }
-
-    fetch('menu.php?lookup_member=' + encodeURIComponent(phone))
-        .then(function (res) { return res.json(); })
-        .then(function (data) {
-
-            if (data.found) {
-                memberId = data.user_id;
-                memberName = data.name;
-                setMemberResult('Member: ' + data.name, 'ok');
-            } else {
-                memberId = null;
-                setMemberResult('Member tidak ditemukan', 'error');
-            }
-
-        })
-        .catch(function () {
-            setMemberResult('Gagal mencari member', 'error');
-        });
-
-});
-
-// Member baru
-var memberModal = new bootstrap.Modal(document.getElementById('memberModal'));
-
-document.getElementById('newMemberBtn').addEventListener('click', function () {
-
-    ['newMemberName', 'newMemberGender', 'newMemberDob', 'newMemberAddress', 'newMemberEmail'].forEach(function (id) {
-        document.getElementById(id).value = '';
-    });
-
-    document.getElementById('newMemberPhone').value = document.getElementById('memberPhone').value.replace(/\D/g, '');
-    document.getElementById('memberError').classList.add('hidden');
-
-    memberModal.show();
-
-});
-
-document.getElementById('memberSave').addEventListener('click', function () {
-
-    var saveBtn = this;
-    var errorBox = document.getElementById('memberError');
-    var phone = document.getElementById('newMemberPhone').value.replace(/\D/g, '');
-    var form = new FormData();
-
-    form.append('register_member', '1');
-    form.append('name', document.getElementById('newMemberName').value);
-    form.append('phone', phone);
-    form.append('gender', document.getElementById('newMemberGender').value);
-    form.append('date_of_birth', document.getElementById('newMemberDob').value);
-    form.append('address', document.getElementById('newMemberAddress').value);
-    form.append('email', document.getElementById('newMemberEmail').value);
-
-    saveBtn.disabled = true;
-    errorBox.classList.add('hidden');
-
-    fetch('menu.php', { method: 'POST', body: form })
-        .then(function (res) { return res.json(); })
-        .then(function (data) {
-
-            if (!data.ok) {
-                errorBox.textContent = data.message || 'Member gagal disimpan.';
-                errorBox.classList.remove('hidden');
-                return;
-            }
-
-            memberId = data.user_id;
-            memberName = data.name;
-
-            document.getElementById('memberPhone').value = phone;
-            setMemberResult('Member baru: ' + data.name, 'ok');
-
-            memberModal.hide();
-
-        })
-        .catch(function () {
-            errorBox.textContent = 'Koneksi gagal, coba lagi.';
-            errorBox.classList.remove('hidden');
-        })
-        .finally(function () {
-            saveBtn.disabled = false;
-        });
-
-});
-
-// Payment
-var payModalEl = document.getElementById('payModal');
-var receiptModal = new bootstrap.Modal(document.getElementById('receiptModal'));
-
-var payTotal = 0;
-var cashReceived = 0;
-var pendingReceipt = null;
-
-function updatePayState() {
-
-    var isCash = payMethod === 'Cash';
-    var diff = cashReceived - payTotal;
-    var changeBox = document.getElementById('cashChange');
-
-    document.getElementById('cashSection').classList.toggle('hidden', !isCash);
-
-    if (isCash) {
-
-        if (cashReceived === 0) {
-            changeBox.textContent = '-';
-        } else if (diff < 0) {
-            changeBox.textContent = 'Kurang ' + formatRupiah(-diff);
-        } else {
-            changeBox.textContent = formatRupiah(diff);
-        }
-
-        changeBox.classList.toggle('short', cashReceived > 0 && diff < 0);
-
-    }
-
-    document.getElementById('payConfirm').disabled =
-        !(payMethod !== '' && (!isCash || cashReceived >= payTotal));
-
-}
-
-function setCashReceived(value) {
-
-    cashReceived = value;
-
-    document.getElementById('cashReceived').value =
-        value > 0 ? String(value).replace(/\B(?=(\d{3})+(?!\d))/g, '.') : '';
-
-    updatePayState();
-
-}
-
-function selectPayMethod(method) {
-
-    payMethod = method;
-
-    document.querySelectorAll('#payMethods .size-btn').forEach(function (item) {
-        item.classList.toggle('active', item.dataset.method === method);
-    });
-
-    if (method !== 'Cash') {
-        setCashReceived(0);
-    }
-
-    updatePayState();
-
-}
-
-document.getElementById('payBtn').addEventListener('click', function () {
-
-    payTotal = cartTotal();
-
-    document.getElementById('payError').classList.add('hidden');
-    document.getElementById('payModalSummary').textContent = orderType + ' · ' + cart.length + ' item';
-    document.getElementById('payModalTotal').textContent = formatRupiah(payTotal);
-
-    selectPayMethod('Cash');
-    setCashReceived(0);
-
-    payModal.show();
-
-});
-
-document.querySelectorAll('#payMethods .size-btn').forEach(function (button) {
-    button.addEventListener('click', function () {
-        selectPayMethod(button.dataset.method);
-    });
-});
-
-document.getElementById('cashReceived').addEventListener('input', function () {
-    setCashReceived(parseInt(this.value.replace(/\D/g, ''), 10) || 0);
-});
-
-document.querySelectorAll('.cash-quick-btn').forEach(function (button) {
-    button.addEventListener('click', function () {
-        setCashReceived(button.dataset.cash === 'exact' ? payTotal : parseInt(button.dataset.cash, 10));
-    });
-});
-
-document.getElementById('payConfirm').addEventListener('click', function () {
-
-    var confirmBtn = this;
-    var errorBox = document.getElementById('payError');
-
-    if (!payMethod) {
-        errorBox.textContent = 'Pilih metode pembayaran dulu.';
-        errorBox.classList.remove('hidden');
-        return;
-    }
-
-    if (payMethod === 'Cash' && cashReceived < payTotal) {
-        errorBox.textContent = 'Uang diterima kurang dari total.';
-        errorBox.classList.remove('hidden');
-        return;
-    }
-
-    // Salinan pesanan untuk struk (cart dikosongkan setelah sukses)
-    var snapshot = cart.map(function (item) {
-        return { name: item.name, size: item.size, price: item.price, qty: item.qty };
-    });
-
-    var customer = document.getElementById('customerName').value.trim() || memberName || '-';
-    var method = payMethod;
-    var received = cashReceived;
-    var form = new FormData();
-
-    form.append('checkout', '1');
-    form.append('order_type', orderType);
-    form.append('payment_method', method);
-    form.append('member_id', memberId || '');
-    form.append('cash_received', method === 'Cash' ? received : '');
-    form.append('cart', JSON.stringify(cart.map(function (item) {
-        return { menu_id: item.menu_id, size: item.size, qty: item.qty };
-    })));
-
-    confirmBtn.disabled = true;
-    errorBox.classList.add('hidden');
-
-    fetch('menu.php', { method: 'POST', body: form })
-        .then(function (res) { return res.json(); })
-        .then(function (data) {
-
-            if (!data.ok) {
-                errorBox.textContent = data.message || 'Pesanan gagal disimpan.';
-                errorBox.classList.remove('hidden');
-                return;
-            }
-
-            pendingReceipt = {
-                id: data.order_id,
-                type: orderType,
-                customer: customer,
-                items: snapshot,
-                total: data.total,
-                method: method,
-                received: received,
-                change: data.change,
-                date: new Date()
-            };
-
-            cart = [];
-            memberId = null;
-            memberName = '';
-
-            document.getElementById('customerName').value = '';
-            document.getElementById('memberPhone').value = '';
-            setMemberResult('');
-            renderCart();
-
-            payModal.hide();
-
-        })
-        .catch(function () {
-            errorBox.textContent = 'Koneksi gagal, coba lagi.';
-            errorBox.classList.remove('hidden');
-        })
-        .finally(function () {
-            updatePayState();
-        });
-
-});
-
-// Struk muncul setelah modal payment tertutup
-payModalEl.addEventListener('hidden.bs.modal', function () {
-
-    if (pendingReceipt) {
-        var receipt = pendingReceipt;
-        pendingReceipt = null;
-        showReceipt(receipt);
-    }
-
-});
-
-function receiptRow(left, right, bold) {
-
-    var row = document.createElement('div');
-    var a = document.createElement('span');
-    var b = document.createElement('span');
-
-    row.className = 'receipt-row' + (bold ? ' bold' : '');
-    a.textContent = left;
-    b.textContent = right;
-
-    row.appendChild(a);
-    row.appendChild(b);
-
-    return row;
-
-}
-
-function receiptLine(text, className) {
-
-    var line = document.createElement('div');
-
-    line.className = className || 'receipt-line';
-    line.textContent = text;
-
-    return line;
-
-}
-
-function receiptDash() {
-
-    var dash = document.createElement('div');
-
-    dash.className = 'receipt-dash';
-
-    return dash;
-
-}
-
-function showReceipt(r) {
-
-    var paper = document.getElementById('receiptPaper');
-
-    paper.innerHTML = '';
-
-    paper.appendChild(receiptLine('LÜMA', 'receipt-brand'));
-    paper.appendChild(receiptLine('Order #' + r.id + ' · ' + r.type));
-    paper.appendChild(receiptLine(r.date.toLocaleString('id-ID')));
-    paper.appendChild(receiptLine('Pelanggan: ' + r.customer));
-    paper.appendChild(receiptDash());
-
-    r.items.forEach(function (item) {
-
-        var label = item.name;
-
-        if (item.size) {
-            label += ' ' + item.size.charAt(0).toUpperCase();
-        }
-
-        label += ' ×' + item.qty;
-
-        paper.appendChild(receiptRow(label, formatRupiah(item.price * item.qty)));
-
-    });
-
-    paper.appendChild(receiptDash());
-    paper.appendChild(receiptRow('Total', formatRupiah(r.total), true));
-
-    if (r.method === 'Cash') {
-        paper.appendChild(receiptRow('Cash', formatRupiah(r.received)));
-        paper.appendChild(receiptRow('Kembali', formatRupiah(r.change)));
-    } else {
-        paper.appendChild(receiptRow('Bayar', r.method));
-    }
-
-    paper.appendChild(receiptDash());
-    paper.appendChild(receiptLine('Terima kasih ☕', 'receipt-thanks'));
-
-    receiptModal.show();
-
-}
-
-document.getElementById('printReceipt').addEventListener('click', function () {
-    window.print();
-});
-
-renderCart();
-
-// BUKA LAGI MODAL SETELAH UPDATE STOCK
-if (new URLSearchParams(window.location.search).get('open') === 'ingredients') {
-
-    new bootstrap.Modal(document.getElementById('ingredientModal')).show();
-
-    history.replaceState(null, '', 'menu.php');
-
-}
-
-</script>
+<?php endif; ?>
 
 </body>
 </html>

@@ -217,7 +217,9 @@ try {
 
     <title>LŪMA Café | Customer Dashboard</title>
 
-    <link rel="stylesheet" href="dashboard.css">
+    
+<link rel="stylesheet" href="dashboard.css?v=3">
+
 </head>
 
 <body>
@@ -229,12 +231,15 @@ try {
             LŪMA<span>.</span>
         </a>
 
-        <nav class="nav-links">
-            <a href="../dashboard_main.php">Home</a>
-            <a href="../dashboard_main.php#menu">Menu</a>
-            <a href="#moments">LŪMA Moments</a>
-            <a href="#rewards">Rewards</a>
-        </nav>
+        
+<nav class="nav-links">
+    <a href="dashboard.php">Home</a>
+    <a href="menu.php">Menu</a>
+    <a href="luma_moments.php">LŪMA Moments</a>
+    <a href="dashboard.php#rewards">Rewards</a>
+    <a href="my_orders.php">My orders</a>
+</nav>
+
 
         <div class="nav-actions">
             <span class="hello-name">
@@ -263,7 +268,7 @@ try {
                 yang berarti bersama LŪMA.
             </p>
 
-            <a href="../dashboard_main.php#menu" class="btn-primary">
+            <a href="menu.php" class="btn-primary">
                 Explore Our Menu <span>→</span>
             </a>
         </div>
@@ -366,9 +371,12 @@ try {
                 <p>Pilihan yang bisa menemani harimu.</p>
             </div>
 
-            <a class="text-link" href="../dashboard_main.php#menu">
-                Explore all menu →
-            </a>
+            
+        <a class="text-link"
+        href="luma_moments.php?moment_id=<?= (int)$moment['moment_id'] ?>">
+         Discover →
+        </a>
+
         </div>
 
         <?php if ($menus): ?>
@@ -417,7 +425,7 @@ try {
                                     <?= e(rupiah($menu['display_price'])) ?>
                                 </span>
 
-                                <a class="text-link" href="../dashboard_main.php#menu">
+                                <a class="text-link" href="menu.php">
                                     View menu →
                                 </a>
 
