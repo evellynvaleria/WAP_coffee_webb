@@ -21,7 +21,7 @@ const SHOW_DB_ERROR = true;
 ===================================================== */
 
 if (!isset($conn) || !($conn instanceof mysqli)) {
-    die("Koneksi database tidak ditemukan. Pastikan config/database.php membuat variabel \$conn (mysqli).");
+    die("Database connection not found. Make sure config/database.php creates the \$conn variable (mysqli).");
 }
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
@@ -39,7 +39,7 @@ function redirectTo(string $url): void
     }
 
     echo '<meta http-equiv="refresh" content="0;url=' . htmlspecialchars($url) . '">';
-    echo '<p>Akun berhasil dibuat. <a href="' . htmlspecialchars($url) . '">Klik di sini untuk login</a></p>';
+    echo '<p>Account created successfully. <a href="' . htmlspecialchars($url) . '">Click here to log in</a></p>';
     exit;
 }
 
@@ -376,8 +376,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             required
                         >
                             <option value="">Gender</option>
-                            <option value="P" <?= ($_POST['gender'] ?? '') === 'P' ? 'selected' : '' ?>>Perempuan</option>
-                            <option value="L" <?= ($_POST['gender'] ?? '') === 'L' ? 'selected' : '' ?>>Laki-laki</option>
+                            <option value="P" <?= ($_POST['gender'] ?? '') === 'P' ? 'selected' : '' ?>>Female</option>
+                            <option value="L" <?= ($_POST['gender'] ?? '') === 'L' ? 'selected' : '' ?>>Male</option>
                         </select>
 
                     </div>

@@ -197,7 +197,7 @@ try {
 ?>
 
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
 
@@ -241,7 +241,7 @@ try {
 
         <div class="nav-actions">
             <span class="hello-name">
-                Haloo, <?= e($name) ?>
+                Hello, <?= e($name) ?>
             </span>
 
             <a href="../logout.php" class="logout-link">
@@ -272,9 +272,9 @@ try {
             </h1>
 
             <p>
-                Selamat datang kembali, <?= e($name) ?>.
-                Temukan minuman favoritmu dan nikmati
-                momen istimewa bersama LŪMA.
+                Welcome back, <?= e($name) ?>.
+                Discover your favorite drinks and enjoy
+                a special moment with LŪMA.
             </p>
 
             <div class="welcome-actions">
@@ -322,8 +322,8 @@ try {
             <h2>Every sip brings you closer.</h2>
 
             <p>
-                Kumpulkan 10 poin untuk setiap menu yang kamu pesan
-                dan nikmati perjalanan bersama LŪMA.
+                Earn 10 points for every item you order
+                and enjoy the journey with LŪMA.
             </p>
         </div>
 
@@ -357,8 +357,8 @@ try {
                 <h2>Recommended for you</h2>
 
                 <p>
-                    Temukan pilihan yang mungkin menjadi
-                    favorit barumu.
+                    Find a pick that might become
+                    your new favorite.
                 </p>
             </div>
 
@@ -433,7 +433,7 @@ try {
 
                                 <a href="menu.php"
                                    class="round-arrow"
-                                   aria-label="Lihat menu">
+                                   aria-label="View menu">
                                     ↗
                                 </a>
 
@@ -452,11 +452,11 @@ try {
             <div class="empty-state">
                 <span class="empty-icon">☕</span>
 
-                <h3>Menu sedang disiapkan</h3>
+                <h3>Our menu is being prepared</h3>
 
                 <p>
-                    Silakan kunjungi halaman Menu
-                    untuk melihat pilihan lainnya.
+                    Please visit the Menu page
+                    to see more options.
                 </p>
 
                 <a href="menu.php" class="btn-outline">
@@ -484,8 +484,8 @@ try {
                 <h2>Find your LŪMA Moment</h2>
 
                 <p>
-                    Pilih suasana yang sesuai dengan
-                    momenmu hari ini.
+                    Choose the mood that fits
+                    your moment today.
                 </p>
             </div>
 
@@ -524,7 +524,7 @@ try {
         <?php else: ?>
 
             <div class="empty-state compact-empty">
-                <p>LŪMA Moments akan segera tersedia.</p>
+                <p>LŪMA Moments will be available soon.</p>
 
                 <a href="luma_moments.php" class="text-link">
                     Visit LŪMA Moments →
@@ -551,7 +551,7 @@ try {
                 <h2>Recent orders</h2>
 
                 <p>
-                    Lihat kembali pesanan terakhirmu.
+                    Take another look at your latest orders.
                 </p>
             </div>
 
@@ -617,8 +617,8 @@ try {
                 <h3>Your journey starts here</h3>
 
                 <p>
-                    Belum ada pesanan. Yuk, temukan minuman
-                    yang cocok untukmu.
+                    You have no orders yet. Let's find
+                    a drink that suits you.
                 </p>
 
                 <a href="menu.php" class="btn-outline">
@@ -645,7 +645,7 @@ try {
         <h2>Make today a little more meaningful.</h2>
 
         <p>
-            Temani harimu dengan secangkir kebahagiaan dari LŪMA.
+            Accompany your day with a cup of happiness from LŪMA.
         </p>
 
         <a href="menu.php" class="btn-light">
@@ -670,7 +670,7 @@ try {
                 <h2>Your Profile</h2>
 
                 <p>
-                    Kenali dan kelola informasi akun LŪMA kamu.
+                    Get to know and manage your LŪMA account information.
                 </p>
             </div>
         </div>

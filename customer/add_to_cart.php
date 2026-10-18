@@ -1,4 +1,3 @@
-
 <?php
 session_start();
 
@@ -44,7 +43,7 @@ if (
     $quantity < 1 ||
     $quantity > 50
 ) {
-    exit('Data pesanan tidak valid.');
+    exit('Invalid order data.');
 }
 
 /* Ambil data menu dan kategorinya */
@@ -69,7 +68,7 @@ $menu = $stmt->get_result()->fetch_assoc();
 $stmt->close();
 
 if (!$menu) {
-    exit('Menu tidak tersedia.');
+    exit('This menu item is not available.');
 }
 
 /* Bedakan pastry dengan menu lainnya */
@@ -82,7 +81,7 @@ if ($isPastry) {
 } else {
     // Minuman tetap wajib memiliki ukuran di menu_details
     if (!in_array($size, ['small', 'medium', 'large'], true)) {
-        exit('Ukuran menu tidak valid.');
+        exit('Invalid menu size.');
     }
 
     $stmt = $conn->prepare("
@@ -99,7 +98,7 @@ if ($isPastry) {
     $stmt->close();
 
     if (!$detail) {
-        exit('Ukuran menu tidak tersedia.');
+        exit('This menu size is not available.');
     }
 
     $size = strtolower($detail['size']);
@@ -107,7 +106,7 @@ if ($isPastry) {
 }
 
 if ($price <= 0) {
-    exit('Harga menu tidak valid. Periksa harga pada database.');
+    exit('Invalid menu price. Please check the price in the database.');
 }
 
 /* Simpan ke keranjang session */
@@ -122,7 +121,7 @@ if (isset($_SESSION['cart'][$key])) {
         (int) $_SESSION['cart'][$key]['quantity'] + $quantity;
 
     if ($newQuantity > 50) {
-        exit('Jumlah maksimum untuk satu item adalah 50.');
+        exit('The maximum quantity for a single item is 50.');
     }
 
     $_SESSION['cart'][$key]['quantity'] = $newQuantity;

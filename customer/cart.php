@@ -41,6 +41,19 @@ foreach ($cart as $item) {
     $total += (float) ($item['price'] ?? 0) * $quantity;
 }
 
+/*
+ * Konfirmasi hapus item (pengganti JavaScript confirm()).
+ * Klik "Remove" -> cart.php?confirm_remove=KEY -> tampil kotak konfirmasi.
+ * Klik "Yes, remove" -> remove_from_cart.php?key=KEY
+ */
+$confirmKey  = isset($_GET['confirm_remove'])
+    ? (string) $_GET['confirm_remove']
+    : '';
+
+$confirmItem = ($confirmKey !== '' && isset($cart[$confirmKey]))
+    ? $cart[$confirmKey]
+    : null;
+
 // Siapkan query foto menu dari database
 $imageStmt = $conn->prepare(
     "SELECT image FROM menus WHERE menu_id = ?"
@@ -48,7 +61,7 @@ $imageStmt = $conn->prepare(
 ?>
 
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -85,6 +98,31 @@ $imageStmt = $conn->prepare(
         <h1>My Cart</h1>
         <p>Review your favorites before placing your order.</p>
     </div>
+
+    <?php if ($confirmItem !== null): ?>
+
+        <section class="confirm-box">
+            <p>
+                Remove
+                <strong><?= e($confirmItem['menu_name'] ?? 'this item') ?></strong>
+                from your cart?
+            </p>
+
+            <div class="confirm-actions">
+                <a
+                    class="confirm-yes"
+                    href="remove_from_cart.php?key=<?= urlencode($confirmKey) ?>"
+                >
+                    Yes, remove
+                </a>
+
+                <a class="confirm-cancel" href="cart.php">
+                    Cancel
+                </a>
+            </div>
+        </section>
+
+    <?php endif; ?>
 
     <?php if (empty($cart)): ?>
 
@@ -139,27 +177,23 @@ $imageStmt = $conn->prepare(
                     // Folder gambar: WAP_coffee_webb/assets/menu/
                     $imageName = basename($image);
 
-                    // Path dari customer/cart.php ke folder gambar
-                    $imagePath = '../assets/menu/' . $imageName;
+                    // Cek file gambar di server (pengganti JavaScript onerror)
+                    $imageFile = __DIR__ . '/../assets/menu/' . $imageName;
+
+                    $imageSrc = ($imageName !== '' && is_file($imageFile))
+                        ? '../assets/menu/' . rawurlencode($imageName)
+                        : '';
                     ?>
 
                     <article class="cart-item">
 
-                        <?php if ($imageName !== ''): ?>
+                        <?php if ($imageSrc !== ''): ?>
 
                             <img
-                                src="<?= e($imagePath) ?>"
+                                src="<?= e($imageSrc) ?>"
                                 alt="<?= e($name) ?>"
                                 class="product-image"
-                                onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
                             >
-
-                            <div
-                                class="product-placeholder"
-                                style="display: none;"
-                            >
-                                LŪMA
-                            </div>
 
                         <?php else: ?>
 
@@ -188,8 +222,7 @@ $imageStmt = $conn->prepare(
 
                         <a
                             class="remove-link"
-                            href="remove_from_cart.php?key=<?= urlencode((string) $key) ?>"
-                            onclick="return confirm('Remove this item from your cart?')"
+                            href="cart.php?confirm_remove=<?= urlencode((string) $key) ?>"
                         >
                             Remove
                         </a>

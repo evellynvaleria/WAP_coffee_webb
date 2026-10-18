@@ -13,7 +13,7 @@ function rupiah($value) {
     return 'Rp ' . number_format((float) $value, 0, ',', '.');
 }
 
-// Status login
+// Login status
 $loggedIn = isset($_SESSION['user_id']);
 $userName = $_SESSION['name'] ?? '';
 $userRole = $_SESSION['role'] ?? '';
@@ -107,7 +107,7 @@ try {
 <?php endif; ?>
 
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -131,9 +131,9 @@ try {
 
     <a class="account-button" href="<?= e($accountUrl) ?>">
         <?php if ($loggedIn): ?>
-            Haloo, <?= e($userName) ?>
+            Hello, <?= e($userName) ?>
         <?php else: ?>
-            Login untuk melanjutkan
+            Log in to continue
         <?php endif; ?>
     </a>
 </header>
@@ -149,8 +149,8 @@ try {
             </h1>
 
             <p class="hero-description">
-                Temukan secangkir kopi yang menemani ceritamu.
-                Nikmati setiap momen bersama LŪMA.
+                Find the cup of coffee that accompanies your story.
+                Enjoy every moment with LŪMA.
             </p>
 
             <a href="#menu" class="primary-button">
@@ -167,7 +167,7 @@ try {
 
             <?php if ($heroImage !== ''): ?>
                 <img src="<?= e($heroImage) ?>"
-                     alt="Menu pilihan LUMA Café">
+                     alt="Featured menu at LŪMA Café">
             <?php else: ?>
                 <div class="image-placeholder">
                     <span>LŪMA Café</span>
@@ -184,16 +184,16 @@ try {
                 <h2>Our Favorites</h2>
             </div>
 
-            <p>Temukan favorit baru untuk menemani harimu.</p>
+            <p>Find a new favorite to accompany your day.</p>
         </div>
 
         <?php if ($dbError): ?>
             <p class="empty-message">
-                Menu belum dapat dimuat. Periksa koneksi database.
+                The menu could not be loaded. Please check the database connection.
             </p>
         <?php elseif (empty($menus)): ?>
             <p class="empty-message">
-                Belum ada menu tersedia saat ini.
+                No menu items are available right now.
             </p>
         <?php else: ?>
             <div class="menu-grid">
@@ -239,12 +239,12 @@ try {
                 <h2>LŪMA Moments</h2>
             </div>
 
-            <p>Setiap suasana punya teman yang tepat.</p>
+            <p>Every mood has the perfect companion.</p>
         </div>
 
         <?php if (empty($moments)): ?>
             <p class="empty-message">
-                Rekomendasi Moments belum tersedia.
+                Moments recommendations are not available yet.
             </p>
         <?php else: ?>
             <div class="moments-grid">
@@ -260,7 +260,7 @@ try {
                             <p>Perfect with</p>
                             <strong><?= e($moment['menu_name']) ?></strong>
                         <?php else: ?>
-                            <p>Temukan teman untuk momenmu.</p>
+                            <p>Find a companion for your moment.</p>
                         <?php endif; ?>
                     </article>
                 <?php endforeach; ?>
@@ -273,8 +273,8 @@ try {
             <p class="eyebrow">A LITTLE MORE LOVE</p>
             <h2>Every cup brings you closer.</h2>
             <p>
-                Nikmati perjalanan bersama LŪMA dan temukan
-                pengalaman spesial di setiap kunjungan.
+                Enjoy the journey with LŪMA and discover
+                a special experience with every visit.
             </p>
         </div>
 
