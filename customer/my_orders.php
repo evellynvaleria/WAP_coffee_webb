@@ -155,6 +155,7 @@ function statusClass($status): string
         <a href="luma_moments.php">LŪMA Moments</a>
         <a href="dashboard.php#rewards">Rewards</a>
         <a href="my_orders.php" class="active">My Orders</a>
+        <a href="dashboard.php#profile">Profile</a>
     </nav>
 
     <a href="cart.php" class="orders-cart">My Cart</a>

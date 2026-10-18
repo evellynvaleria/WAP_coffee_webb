@@ -1,3 +1,4 @@
+
 <?php
 session_start();
 
@@ -143,6 +144,7 @@ if ($selectedId > 0 && !$selectedMoment) {
     <a href="luma_moments.php">LŪMA Moments</a>
     <a href="dashboard.php#rewards">Rewards</a>
     <a href="my_orders.php">My orders</a>
+    <a href="dashboard.php#profile">Profile</a>
         </nav>
 
         <div class="nav-actions">

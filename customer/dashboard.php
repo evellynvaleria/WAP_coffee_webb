@@ -693,10 +693,6 @@ try {
 
             </div>
 
-            <a href="profile.php"
-               class="btn-outline profile-button">
-                View Profile <span>→</span>
-            </a>
 
         </div>
 

@@ -3,6 +3,6 @@ session_start();
 session_unset();
 session_destroy();
 
-header("Location: dashboard_main.php");
+header("Location: main_dashboard.php");
 exit;
 ?>

@@ -105,7 +105,7 @@ button {
     padding: 11px 20px;
     border: 1px solid var(--brown);
     border-radius: 9px;
-    background: var(--brown);
+    background: var(#eee6dc);
     color: var(--white);
     font-size: 13px;
     font-weight: 600;
