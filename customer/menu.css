@@ -1,8 +1,8 @@
+
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap');
 
 /* =========================================
-   LŪMA CAFÉ — MENU PAGE
-   Matches Customer Dashboard
+   LUMA CAFE - MENU PAGE
 ========================================= */
 
 :root {
@@ -56,88 +56,117 @@ button {
 }
 
 /* =========================================
-   NAVBAR
+   NAVBAR - STANDARD LUMA CUSTOMER
 ========================================= */
 
 .menu-navbar {
     position: sticky;
     top: 0;
     z-index: 1000;
+
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 28px;
-    min-height: 78px;
-    padding: 0 max(22px, calc((100% - 1160px) / 2));
-    background: rgba(255, 253, 249, 0.96);
-    border-bottom: 1px solid var(--line);
-    backdrop-filter: blur(12px);
+
+    min-height: 85px;
+    padding: 0 max(30px, calc((100% - 1110px) / 2));
+
+    background: #fffdfa;
+    border-bottom: 1px solid #e8e0d7;
 }
 
+/* Logo */
 .menu-logo {
     flex-shrink: 0;
-    color: var(--coffee-dark);
+
+    color: #4b352b;
     font-family: 'Playfair Display', serif;
     font-size: 29px;
     font-weight: 700;
-    letter-spacing: 1px;
+    letter-spacing: -1px;
+
+    text-decoration: none;
     white-space: nowrap;
 }
 
 .menu-logo span {
-    color: var(--accent);
+    color: #4b352b;
 }
 
+/* Navigation links */
 .menu-navbar .nav-links {
     display: flex;
+    flex: 1;
     align-items: center;
     justify-content: center;
-    gap: 26px;
+    gap: 27px;
+    flex-wrap: nowrap;
 }
 
 .menu-navbar .nav-links a {
     position: relative;
     padding: 10px 0;
-    color: #68584d;
+
+    color: #735f52;
+    font-family: 'DM Sans', Arial, sans-serif;
     font-size: 13px;
     font-weight: 600;
+
+    text-decoration: none;
     white-space: nowrap;
+
     transition: color 0.2s ease;
 }
 
 .menu-navbar .nav-links a:hover,
 .menu-navbar .nav-links a.active {
-    color: var(--coffee-dark);
+    color: #4b352b;
 }
 
+/* Active page indicator */
 .menu-navbar .nav-links a.active::after {
     position: absolute;
     right: 0;
-    bottom: 3px;
+    bottom: 2px;
     left: 0;
+
     height: 2px;
     border-radius: 2px;
-    background: var(--accent);
+
+    background: #c8a989;
     content: "";
 }
 
+/* My Cart button */
 .menu-cart-link {
+    display: inline-flex;
     flex-shrink: 0;
-    padding: 9px 16px;
-    color: var(--coffee-dark);
+    align-items: center;
+    justify-content: center;
+
+    min-height: 40px;
+    padding: 9px 15px;
+
+    color: #735f52;
     background: transparent;
-    border: 1px solid var(--line);
-    border-radius: 999px;
+    border: 1px solid #e8e0d7;
+    border-radius: 6px;
+
+    font-family: 'DM Sans', Arial, sans-serif;
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 600;
+
+    text-decoration: none;
     white-space: nowrap;
+
     transition: all 0.2s ease;
 }
 
 .menu-cart-link:hover {
-    color: white;
-    background: var(--coffee-dark);
-    border-color: var(--coffee-dark);
+    color: #4b352b;
+    background: #f8f5f0;
+    border-color: #c8a989;
 }
 
 /* =========================================
@@ -159,6 +188,7 @@ button {
     overflow: hidden;
     padding: 65px 24px 60px;
     text-align: center;
+
     background: linear-gradient(
         115deg,
         #efe2d4,
@@ -235,13 +265,17 @@ button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+
     padding: 9px 17px;
+
     color: #68584d;
     background: var(--paper);
     border: 1px solid var(--line);
     border-radius: 999px;
+
     font-size: 12px;
     font-weight: 600;
+
     transition: all 0.2s ease;
 }
 
@@ -273,9 +307,11 @@ button {
     flex-direction: column;
     min-width: 0;
     overflow: hidden;
+
     background: var(--paper);
     border: 1px solid var(--line);
     border-radius: 13px;
+
     transition:
         transform 0.2s ease,
         box-shadow 0.2s ease;
@@ -311,6 +347,7 @@ button {
     width: 100%;
     height: 100%;
     place-items: center;
+
     color: var(--coffee);
     font-size: 12px;
 }
@@ -376,17 +413,20 @@ button {
     width: 100%;
     min-height: 42px;
     padding: 10px 12px;
+
     color: var(--ink);
     background: var(--paper);
     border: 1px solid #ded2c5;
     border-radius: 6px;
+
     outline: none;
     font-size: 12px;
+
     transition: border-color 0.2s ease;
 }
 
 .menu-add-form select:focus {
-    border-color: var(#4b3328);
+    border-color: var(--coffee-dark);
     box-shadow: 0 0 0 3px rgba(102, 74, 58, 0.1);
 }
 
@@ -401,12 +441,15 @@ button {
     min-height: 42px;
     margin-top: 5px;
     padding: 11px 14px;
+
     color: white;
     background: var(--coffee-dark);
     border: 1px solid var(--coffee-dark);
     border-radius: 5px;
+
     font-size: 12px;
     font-weight: 700;
+
     transition: all 0.2s ease;
 }
 
@@ -430,6 +473,7 @@ button {
     grid-column: 1 / -1;
     padding: 45px 20px;
     text-align: center;
+
     background: var(--paper);
     border: 1px dashed #d9c9b9;
     border-radius: 13px;
@@ -472,7 +516,7 @@ button {
 }
 
 /* =========================================
-   RESPONSIVE
+   RESPONSIVE - TABLET
 ========================================= */
 
 @media (max-width: 1050px) {
@@ -489,22 +533,50 @@ button {
     }
 }
 
-@media (max-width: 800px) {
+@media (max-width: 900px) {
     .menu-navbar {
+        padding: 0 24px;
+    }
+
+    .menu-navbar .nav-links {
+        gap: 14px;
+    }
+
+    .menu-navbar .nav-links a {
+        font-size: 12px;
+    }
+}
+
+/* =========================================
+   RESPONSIVE - MOBILE
+========================================= */
+
+@media (max-width: 700px) {
+    .menu-navbar {
+        min-height: auto;
         flex-wrap: wrap;
-        justify-content: space-between;
-        padding: 14px 22px;
+        gap: 12px 16px;
+        padding: 15px 20px;
+    }
+
+    .menu-logo {
+        font-size: 27px;
+    }
+
+    .menu-cart-link {
+        margin-left: auto;
     }
 
     .menu-navbar .nav-links {
         order: 3;
-        width: 100%;
+        flex: 0 0 100%;
         justify-content: flex-start;
         flex-wrap: wrap;
-        gap: 12px 20px;
+        gap: 10px 20px;
     }
 
     .menu-navbar .nav-links a {
+        padding: 5px 0;
         font-size: 12px;
     }
 
@@ -591,7 +663,23 @@ button {
     }
 }
 
-@media (max-width: 360px) {
+/* =========================================
+   RESPONSIVE - VERY SMALL MOBILE
+========================================= */
+
+@media (max-width: 380px) {
+    .menu-navbar {
+        padding: 14px 15px;
+    }
+
+    .menu-navbar .nav-links {
+        gap: 8px 14px;
+    }
+
+    .menu-navbar .nav-links a {
+        font-size: 11px;
+    }
+
     .menu-product-grid {
         grid-template-columns: 1fr;
     }

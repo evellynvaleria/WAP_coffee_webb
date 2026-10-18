@@ -137,9 +137,8 @@ function statusClass($status): string
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <title>My Orders | LŪMA Café</title>
+    <link rel="stylesheet" href="my_orders.css?v=3">
 
-    <link rel="stylesheet" href="luma_moments.css">
-    <link rel="stylesheet" href="my_orders.css">
 </head>
 
 <body>

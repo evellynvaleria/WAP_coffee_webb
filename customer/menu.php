@@ -1,3 +1,4 @@
+
 <?php
 session_start();
 
@@ -134,7 +135,7 @@ $menus = $stmt->get_result();
 
     <title>Menu | LŪMA Café</title>
 
-    <link rel="stylesheet" href="luma_moments.css">
+    <link rel="stylesheet" href="menu.css?v=2">
 </head>
 
 <body>
