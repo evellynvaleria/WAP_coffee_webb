@@ -30,7 +30,7 @@ function rupiah($number): string
 
 function getColumnNames(mysqli $conn, string $table): array
 {
-    // Nama tabel selalu konstanta di file ini.
+    // Table names are always constants in this file.
     $columns = [];
     $result  = $conn->query("SHOW COLUMNS FROM `$table`");
 
@@ -52,7 +52,7 @@ function firstExisting(array $candidates, array $available): ?string
     return null;
 }
 
-// Nilai enum asli di database (sama seperti di menu.php)
+// Real enum value stored in the database (same as in menu.php)
 function enumValue(mysqli $conn, string $table, string $column, string $wanted): string
 {
     $result = $conn->query("SHOW COLUMNS FROM `$table` LIKE '$column'");
@@ -74,11 +74,11 @@ function enumValue(mysqli $conn, string $table, string $column, string $wanted):
     }
 
     throw new Exception(
-        "Nilai '$wanted' tidak ada di kolom $table.$column (pilihan: " . implode(', ', $options) . ")."
+        "Value '$wanted' does not exist in column $table.$column (options: " . implode(', ', $options) . ")."
     );
 }
 
-/* ALUR STATUS */
+/* STATUS FLOW */
 function normalizeStatus($raw): string
 {
     $key = strtolower(trim((string)$raw));
@@ -91,26 +91,27 @@ function normalizeStatus($raw): string
     if (str_contains($key, 'cancel')) {
         return 'Cancelled';
     }
-    return 'Pending'; // pending, success, paid, dll.
+    return 'Pending'; // pending, success, paid, etc.
 }
 
 function statusClass(string $status): string
 {
     return 'status-' . strtolower($status);
 }
+
 function ageText(int $minutes): string
 {
     if ($minutes < 1) {
-        return 'Baru saja';
+        return 'Just now';
     }
 
     if ($minutes < 60) {
-        return $minutes . ' mnt lalu';
+        return $minutes . ' min ago';
     }
 
     $hours = intdiv($minutes, 60);
 
-    return $hours < 24 ? $hours . ' jam lalu' : intdiv($hours, 24) . ' hari lalu';
+    return $hours < 24 ? $hours . ' h ago' : intdiv($hours, 24) . ' d ago';
 }
 
 function isLate(array $order): bool
@@ -123,21 +124,21 @@ function timeText(array $order, string $scope): string
     return ($scope === 'all' && $order['date'] !== '' ? $order['date'] . ' ' : '') . $order['time'];
 }
 
-// Langkah berikutnya untuk sebuah pesanan
+// Next step for an order
 function nextAction(array $order): ?array
 {
     if ($order['status'] === 'Pending') {
-        return ['target' => 'Processing', 'label' => 'Proses', 'icon' => 'fa-play', 'long' => 'Proses Pesanan'];
+        return ['target' => 'Processing', 'label' => 'Start', 'icon' => 'fa-play', 'long' => 'Start Order'];
     }
 
     if ($order['status'] === 'Processing') {
-        return ['target' => 'Completed', 'label' => 'Selesai', 'icon' => 'fa-check', 'long' => 'Tandai Selesai'];
+        return ['target' => 'Completed', 'label' => 'Done', 'icon' => 'fa-check', 'long' => 'Mark as Completed'];
     }
 
     return null;
 }
 
-// (dulu di JS) filter, pencarian, dan urutan antrian
+// Filter and search
 function matchesOrder(array $order, string $filter, string $keyword): bool
 {
     if ($filter !== 'All' && $order['status'] !== $filter) {
@@ -153,7 +154,7 @@ function matchesOrder(array $order, string $filter, string $keyword): bool
     return mb_stripos($text, $keyword) !== false;
 }
 
-// Antrian: Pending -> Processing (paling lama dulu), lalu yang sudah selesai (terbaru dulu)
+// Queue order: Pending -> Processing (oldest first), then finished ones (newest first)
 function sortOrders(array $list): array
 {
     $rank = ['Pending' => 0, 'Processing' => 1, 'Completed' => 2, 'Cancelled' => 3];
@@ -173,7 +174,7 @@ function sortOrders(array $list): array
     return $list;
 }
 
-// STATE HALAMAN (filter, scope, pencarian, pesanan terpilih) dibawa lewat URL
+// PAGE STATE (filter, scope, search, selected order) is carried in the URL
 function readState(array $src): array
 {
     $filter = (string)($src['filter'] ?? 'All');
@@ -212,7 +213,7 @@ function stateInputs(array $state): string
     return $html;
 }
 
-// DETEKSI KOLOM
+// COLUMN DETECTION
 try {
     $orderColumns  = getColumnNames($conn, 'orders');
     $detailColumns = getColumnNames($conn, 'order_details');
@@ -230,10 +231,10 @@ $cfg = [
 ];
 
 if ($cfg['status'] === null || $cfg['amount'] === null) {
-    die('Kolom status/total tidak ditemukan di tabel orders. Kolom yang ada: ' . e(implode(', ', $orderColumns)));
+    die('Status/total column not found in the orders table. Available columns: ' . e(implode(', ', $orderColumns)));
 }
 
-// AMBIL PESANAN + ITEM
+// LOAD ORDERS + ITEMS
 function loadOrders(mysqli $conn, array $cfg, string $scope): array
 {
     $where = $scope === 'today' ? 'WHERE DATE(o.order_date) = CURDATE()' : '';
@@ -268,7 +269,7 @@ function loadOrders(mysqli $conn, array $cfg, string $scope): array
         $rows[] = $row;
     }
 
-    // Semua item sekaligus (satu query)
+    // All items at once (single query)
     $itemsByOrder = [];
 
     if ($rows) {
@@ -323,7 +324,7 @@ function loadOrders(mysqli $conn, array $cfg, string $scope): array
     return $orders;
 }
 
-// UPDATE STATUS (POST biasa, lalu redirect balik ke halaman)
+// UPDATE STATUS (plain POST, then redirect back to the page)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
 
     $backState = readState($_POST);
@@ -333,11 +334,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         $target  = (string)($_POST['status'] ?? '');
 
         if (!$orderId || $orderId < 1) {
-            throw new Exception('Pesanan tidak valid.');
+            throw new Exception('Invalid order.');
         }
 
         if (!in_array($target, ['Processing', 'Completed'], true)) {
-            throw new Exception('Status tidak valid.');
+            throw new Exception('Invalid status.');
         }
 
         $stmt = $conn->prepare("SELECT `{$cfg['status']}` AS s FROM orders WHERE order_id = ? LIMIT 1");
@@ -347,13 +348,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         $stmt->close();
 
         if (!$current) {
-            throw new Exception('Pesanan tidak ditemukan.');
+            throw new Exception('Order not found.');
         }
 
         $next = ['Pending' => 'Processing', 'Processing' => 'Completed'];
 
         if (($next[normalizeStatus($current['s'])] ?? null) !== $target) {
-            throw new Exception('Status pesanan sudah berubah, data diperbarui.');
+            throw new Exception('The order status has already changed; data refreshed.');
         }
 
         $dbStatus = enumValue($conn, 'orders', $cfg['status'], $target);
@@ -372,12 +373,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         $_SESSION['flash'] = ['message' => $err->getMessage(), 'error' => true];
     }
 
-    // Post/Redirect/Get: refresh browser tidak mengirim ulang form
+    // Post/Redirect/Get: refreshing the browser does not resubmit the form
     header('Location: ' . buildUrl($backState));
     exit;
 }
 
-// DATA UNTUK TAMPILAN
+// DATA FOR THE VIEW
 $state    = readState($_GET);
 $filter   = $state['filter'];
 $scope    = $state['scope'];
@@ -385,7 +386,7 @@ $keyword  = $state['q'];
 
 $orders = loadOrders($conn, $cfg, $scope);
 
-// Ringkasan & chip (dihitung dari semua pesanan pada scope, sebelum filter)
+// Summary & chips (counted from all orders in the scope, before filtering)
 $count = ['All' => count($orders), 'Pending' => 0, 'Processing' => 0, 'Completed' => 0];
 
 foreach ($orders as $order) {
@@ -399,7 +400,7 @@ $visible  = sortOrders(array_values(array_filter(
     fn($order) => matchesOrder($order, $filter, $keyword)
 )));
 
-// Pesanan yang dipilih untuk panel detail
+// Order selected for the detail panel
 $selected = null;
 
 foreach ($orders as $order) {
@@ -409,7 +410,7 @@ foreach ($orders as $order) {
     }
 }
 
-// Pesan sekali tampil (toast)
+// One-time message (toast)
 $flash = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
 
@@ -420,18 +421,16 @@ $steps = ['Pending', 'Processing', 'Completed'];
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- Pengganti setInterval JS: halaman dimuat ulang otomatis tiap 15 detik -->
+    <!-- Auto reload every 15 seconds -->
     <meta http-equiv="refresh" content="15">
     <title>Order Receive - LÜMA</title>
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- menu.css = dasar tampilan (sidebar, topbar, kartu, filter); order_receive.css = tambahan khusus halaman ini -->
     <link rel="stylesheet" href="menu.css">
     <link rel="stylesheet" href="order_receive.css">
 
     <style>
-        /* Filter/scope sekarang berupa link, bukan button */
         a.filter-btn, a.scope-btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
         .ord-number a { color: inherit; text-decoration: none; }
         .ord-number a:hover { text-decoration: underline; }
@@ -499,7 +498,7 @@ $steps = ['Pending', 'Processing', 'Completed'];
 
         <div class="menu-columns">
 
-            <!-- KOLOM KIRI: RINGKASAN + DAFTAR PESANAN -->
+            <!-- LEFT COLUMN: SUMMARY + ORDER LIST -->
             <div class="menu-left">
 
                 <section class="summary-grid">
@@ -542,12 +541,12 @@ $steps = ['Pending', 'Processing', 'Completed'];
 
                     <div class="section-heading">
                         <h2>Incoming Orders</h2>
-                        <p>Pesanan yang belum selesai ditampilkan paling atas, yang paling lama menunggu di depan</p>
+                        <p>Unfinished orders are shown first, with the longest-waiting order at the front</p>
                     </div>
 
                     <div class="menu-toolbar">
 
-                        <!-- FILTER STATUS -->
+                        <!-- STATUS FILTER -->
                         <div class="filters">
                             <?php foreach (['All', 'Pending', 'Processing', 'Completed'] as $status): ?>
                                 <a href="<?= e(buildUrl($state, ['filter' => $status, 'order' => 0])) ?>"
@@ -562,17 +561,17 @@ $steps = ['Pending', 'Processing', 'Completed'];
                             <!-- SCOPE -->
                             <div class="scope-toggle">
                                 <a href="<?= e(buildUrl($state, ['scope' => 'today', 'order' => 0])) ?>"
-                                   class="scope-btn <?= $scope === 'today' ? 'active' : '' ?>">Hari ini</a>
+                                   class="scope-btn <?= $scope === 'today' ? 'active' : '' ?>">Today</a>
                                 <a href="<?= e(buildUrl($state, ['scope' => 'all', 'order' => 0])) ?>"
-                                   class="scope-btn <?= $scope === 'all' ? 'active' : '' ?>">Semua</a>
+                                   class="scope-btn <?= $scope === 'all' ? 'active' : '' ?>">All</a>
                             </div>
 
-                            <!-- PENCARIAN -->
+                            <!-- SEARCH -->
                             <form method="get" action="order_receive.php" class="search-box">
                                 <?php if ($filter !== 'All'): ?><input type="hidden" name="filter" value="<?= e($filter) ?>"><?php endif; ?>
                                 <?php if ($scope !== 'today'): ?><input type="hidden" name="scope" value="<?= e($scope) ?>"><?php endif; ?>
-                                <button type="submit" aria-label="Cari"><i class="fa-solid fa-magnifying-glass"></i></button>
-                                <input type="text" name="q" value="<?= e($keyword) ?>" placeholder="Cari no. order / nama / menu...">
+                                <button type="submit" aria-label="Search"><i class="fa-solid fa-magnifying-glass"></i></button>
+                                <input type="text" name="q" value="<?= e($keyword) ?>" placeholder="Search order no. / name / menu...">
                             </form>
 
                             <!-- REFRESH -->
@@ -586,7 +585,7 @@ $steps = ['Pending', 'Processing', 'Completed'];
                     </div>
 
                     <small class="live-status">
-                        Diperbarui <?= e(date('H:i:s')) ?> · otomatis tiap 15 detik
+                        Updated <?= e(date('H:i:s')) ?> · auto-refresh every 15 seconds
                     </small>
 
                     <div class="ord-grid">
@@ -623,7 +622,7 @@ $steps = ['Pending', 'Processing', 'Completed'];
 
                                 <ul class="ord-items">
                                     <?php if (!$order['items']): ?>
-                                        <li class="more">Tidak ada item</li>
+                                        <li class="more">No items</li>
                                     <?php endif; ?>
 
                                     <?php foreach (array_slice($order['items'], 0, 3) as $item): ?>
@@ -631,7 +630,7 @@ $steps = ['Pending', 'Processing', 'Completed'];
                                     <?php endforeach; ?>
 
                                     <?php if (count($order['items']) > 3): ?>
-                                        <li class="more">+<?= count($order['items']) - 3 ?> item lainnya</li>
+                                        <li class="more">+<?= count($order['items']) - 3 ?> more items</li>
                                     <?php endif; ?>
                                 </ul>
 
@@ -649,7 +648,7 @@ $steps = ['Pending', 'Processing', 'Completed'];
                                             </button>
                                         </form>
                                     <?php else: ?>
-                                        <span class="ord-done"><?= $order['status'] === 'Completed' ? 'Selesai' : e($order['status']) ?></span>
+                                        <span class="ord-done"><?= $order['status'] === 'Completed' ? 'Done' : e($order['status']) ?></span>
                                     <?php endif; ?>
                                 </div>
 
@@ -662,21 +661,21 @@ $steps = ['Pending', 'Processing', 'Completed'];
                     <div class="empty-state<?= $visible ? ' hidden' : '' ?>">
                         <i class="fa-solid fa-mug-hot"></i>
                         <strong>No orders found</strong>
-                        <span>Belum ada pesanan dengan filter ini.</span>
+                        <span>No orders match this filter.</span>
                     </div>
 
                 </section>
 
             </div>
 
-            <!-- KOLOM KANAN: DETAIL PESANAN -->
+            <!-- RIGHT COLUMN: ORDER DETAILS -->
             <aside class="order-card ord-detail<?= $selected ? ' open' : '' ?>" id="detailPanel">
 
                 <div class="detail-head">
-                    <h3 class="order-title">Detail Pesanan</h3>
+                    <h3 class="order-title">Order Details</h3>
 
                     <?php if ($selected): ?>
-                        <a href="<?= e(buildUrl($state, ['order' => 0])) ?>" class="detail-close" aria-label="Tutup" style="text-decoration:none">
+                        <a href="<?= e(buildUrl($state, ['order' => 0])) ?>" class="detail-close" aria-label="Close" style="text-decoration:none">
                             <i class="fa-solid fa-xmark"></i>
                         </a>
                     <?php endif; ?>
@@ -684,7 +683,7 @@ $steps = ['Pending', 'Processing', 'Completed'];
 
                 <?php if (!$selected): ?>
 
-                    <p class="order-empty">Pilih pesanan untuk melihat detailnya.</p>
+                    <p class="order-empty">Select an order to view its details.</p>
 
                 <?php else: ?>
 
@@ -710,15 +709,15 @@ $steps = ['Pending', 'Processing', 'Completed'];
                         <?php endif; ?>
 
                         <dl class="detail-meta">
-                            <div><dt>Pelanggan</dt><dd><?= e($selected['customer'] . ($selected['is_member'] ? ' (Member)' : '')) ?></dd></div>
-                            <div><dt>Tipe</dt><dd><?= e($selected['type']) ?></dd></div>
-                            <div><dt>Waktu</dt><dd><?= e(timeText($selected, $scope) . ' · ' . ageText($selected['age'])) ?></dd></div>
-                            <div><dt>Pembayaran</dt><dd><?= e($selected['payment'] !== '' ? $selected['payment'] : '-') ?></dd></div>
+                            <div><dt>Customer</dt><dd><?= e($selected['customer'] . ($selected['is_member'] ? ' (Member)' : '')) ?></dd></div>
+                            <div><dt>Type</dt><dd><?= e($selected['type']) ?></dd></div>
+                            <div><dt>Time</dt><dd><?= e(timeText($selected, $scope) . ' · ' . ageText($selected['age'])) ?></dd></div>
+                            <div><dt>Payment</dt><dd><?= e($selected['payment'] !== '' ? $selected['payment'] : '-') ?></dd></div>
                         </dl>
 
                         <div class="order-items">
                             <?php if (!$selected['items']): ?>
-                                <p class="order-empty">Tidak ada item pada pesanan ini.</p>
+                                <p class="order-empty">No items in this order.</p>
                             <?php endif; ?>
 
                             <?php foreach ($selected['items'] as $item): ?>
@@ -760,7 +759,7 @@ $steps = ['Pending', 'Processing', 'Completed'];
 </div>
 
 <?php if ($flash): ?>
-    <!-- Toast: tampil sekali, hilang saat halaman dimuat ulang (maks. 15 detik) -->
+    <!-- Toast: shown once, gone on the next reload (max. 15 seconds) -->
     <div class="ord-toast show<?= $flash['error'] ? ' error' : '' ?>" role="status"><?= e($flash['message']) ?></div>
 <?php endif; ?>
 

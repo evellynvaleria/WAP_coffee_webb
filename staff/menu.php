@@ -17,9 +17,12 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'staff') {
 
 $userName = $_SESSION['name'] ?? 'Staff';
 
-// Keranjang & data kasir disimpan di SESSION (dulu di variabel JavaScript)
+// Cart & cashier data are kept in the SESSION
 $_SESSION['cart']       = $_SESSION['cart'] ?? [];
 $_SESSION['order_type'] = $_SESSION['order_type'] ?? 'Dine in';
+
+// Points earned per menu item purchased by a member
+const POINTS_PER_MENU = 10;
 
 // HELPER FUNCTIONS
 function e($value): string
@@ -32,7 +35,7 @@ function rupiah($number): string
     return 'Rp ' . number_format((float)$number, 0, ',', '.');
 }
 
-// 8,00 -> 8   |   2,50 -> 2.5
+// 8.00 -> 8   |   2.50 -> 2.5
 function formatQty($number): string
 {
     return rtrim(rtrim(number_format((float)$number, 2, '.', ''), '0'), '.');
@@ -64,7 +67,7 @@ function momentInfo($name): array
     return $list[$name] ?? ['fa-star', ''];
 }
 
-// Apakah menu ini memakai ingredient dengan aturan tersebut?
+// Does this menu use an ingredient with the given rule?
 function menuUsesIngredient(array $menu, array $rule): bool
 {
     if (in_array((int)$menu['category_id'], $rule['categories'] ?? [], true)) {
@@ -86,8 +89,7 @@ function menuUsesIngredient(array $menu, array $rule): bool
     return false;
 }
 
-// Gambar hanya dipakai kalau filenya benar-benar ada
-// (pengganti onerror="this.remove()" yang dulu memakai JavaScript)
+// Only use an image if the file really exists
 function menuImage(string $folder, $image): string
 {
     $image = (string)$image;
@@ -95,7 +97,7 @@ function menuImage(string $folder, $image): string
     return ($image !== '' && is_file(__DIR__ . '/' . $folder . $image)) ? $folder . $image : '';
 }
 
-// STATE HALAMAN (kategori, moment, pencarian) dibawa lewat URL
+// PAGE STATE (category, moment, search) is carried in the URL
 function readState(array $src): array
 {
     $cat    = (string)($src['cat'] ?? 'all');
@@ -149,7 +151,18 @@ function cartTotal(array $cart): float
     return $total;
 }
 
-// NILAI ENUM DI TABEL orders
+function cartQty(array $cart): int
+{
+    $qty = 0;
+
+    foreach ($cart as $item) {
+        $qty += (int)$item['qty'];
+    }
+
+    return $qty;
+}
+
+// ENUM VALUES IN THE orders TABLE
 function enumValue(mysqli $conn, string $table, string $column, string $wanted): string
 {
     $result = $conn->query("SHOW COLUMNS FROM `$table` LIKE '$column'");
@@ -171,11 +184,11 @@ function enumValue(mysqli $conn, string $table, string $column, string $wanted):
     }
 
     throw new Exception(
-        "Nilai '$wanted' tidak ada di kolom $table.$column (pilihan: " . implode(', ', $options) . ")."
+        "Value '$wanted' does not exist in column $table.$column (options: " . implode(', ', $options) . ")."
     );
 }
 
-// AKUN WALK-IN
+// WALK-IN ACCOUNT
 function guestUserId(mysqli $conn): int
 {
     $email = 'walkin@luma.local';
@@ -206,10 +219,71 @@ function guestUserId(mysqli $conn): int
     return (int)$id;
 }
 
-// FOLDER GAMBAR MENU
+// MEMBER LOOKUP BY PHONE NUMBER
+// Tolerant of formats: 08xx = 628xx = +628xx, and spaces/dashes stored in the database
+function findMemberByPhone(mysqli $conn, string $phone): ?array
+{
+    $phone = preg_replace('/\D/', '', $phone);
+
+    if ($phone === '') {
+        return null;
+    }
+
+    $variants = [$phone];
+
+    if (str_starts_with($phone, '0'))  $variants[] = '62' . substr($phone, 1);
+    if (str_starts_with($phone, '62')) $variants[] = '0' . substr($phone, 2);
+
+    $variants = array_values(array_unique($variants));
+    $in       = implode(',', array_fill(0, count($variants), '?'));
+
+    $stmt = $conn->prepare("
+        SELECT u.user_id, u.name
+        FROM users u
+        INNER JOIN customer c ON c.user_id = u.user_id
+        WHERE REPLACE(REPLACE(REPLACE(u.phone, '+', ''), '-', ''), ' ', '') IN ($in)
+        LIMIT 1
+    ");
+    $stmt->bind_param(str_repeat('s', count($variants)), ...$variants);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    return $row ?: null;
+}
+
+// Select a member in the session (used by Search and by Payment)
+function selectMember(array $member): void
+{
+    $_SESSION['member_id']   = (int)$member['user_id'];
+    $_SESSION['member_name'] = $member['name'];
+    $_SESSION['member_msg']  = ['text' => 'Member: ' . $member['name'], 'cls' => 'ok'];
+}
+
+// Add points to the rewards table (creates the row if the member has none yet)
+function addRewardPoints(mysqli $conn, int $userId, int $points): void
+{
+    $stmt = $conn->prepare("SELECT 1 FROM rewards WHERE user_id = ? LIMIT 1");
+    $stmt->bind_param("i", $userId);
+    $stmt->execute();
+    $exists = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if ($exists) {
+        $stmt = $conn->prepare("UPDATE rewards SET points = points + ? WHERE user_id = ?");
+    } else {
+        $stmt = $conn->prepare("INSERT INTO rewards (points, user_id) VALUES (?, ?)");
+    }
+
+    $stmt->bind_param("ii", $points, $userId);
+    $stmt->execute();
+    $stmt->close();
+}
+
+// MENU IMAGE FOLDER
 $imageFolder = "../assets/menu/";
 
-// ATURAN INGREDIENT -> MENU
+// INGREDIENT -> MENU RULES
 $ingredientRules = [
     'Coffee Beans'  => ['categories' => [1]],
     'Caramel Sauce' => ['keywords' => ['Caramel']],
@@ -221,7 +295,7 @@ $ingredientRules = [
 
 $rulesByName = array_change_key_case($ingredientRules, CASE_LOWER);
 
-// DESKRIPSI MENU
+// MENU DESCRIPTIONS
 $menuDescriptions = [
     'americano'                => 'Espresso topped with hot water for a smooth, bold cup.',
     'caramelmatcchiato'        => 'Espresso with steamed milk and a sweet caramel drizzle.',
@@ -278,7 +352,7 @@ function menuDescription($menuName, $categoryName): string
     return 'Made fresh at LÜMA.';
 }
 
-// UPDATE STOCK INGREDIENT
+// UPDATE INGREDIENT STOCK
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_stock'])) {
 
     $ingredientId = filter_input(INPUT_POST, 'ingredient_id', FILTER_VALIDATE_INT);
@@ -300,14 +374,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_stock'])) {
     exit;
 }
 
-// SELESAI PESANAN: tutup struk, mulai pesanan baru
+// ORDER DONE: close the receipt, start a new order
 if (isset($_GET['new_order'])) {
     unset($_SESSION['receipt']);
     header('Location: menu.php');
     exit;
 }
 
-// KATEGORI
+// CATEGORIES
 $categories = [];
 
 $resultCategories = $conn->query("
@@ -320,7 +394,7 @@ while ($row = $resultCategories->fetch_assoc()) {
     $categories[] = $row;
 }
 
-// INGREDIENT
+// INGREDIENTS
 $ingredients = [];
 $outCount = 0;
 
@@ -337,7 +411,7 @@ while ($row = $resultIngredients->fetch_assoc()) {
     $ingredients[] = $row;
 }
 
-// MENU
+// MENUS
 $menus = [];
 
 $resultMenus = $conn->query("
@@ -361,7 +435,7 @@ $resultMenus = $conn->query("
 
 while ($row = $resultMenus->fetch_assoc()) {
 
-    // Ingredient yang habis dan dipakai menu ini
+    // Out-of-stock ingredients used by this menu
     $missing = [];
 
     foreach ($ingredients as $ingredient) {
@@ -378,7 +452,7 @@ while ($row = $resultMenus->fetch_assoc()) {
 
     $row['missing_ingredients'] = implode(', ', $missing);
 
-    // Tidak bisa dipesan kalau status manual Unavailable ATAU ingredient habis
+    // Cannot be ordered if manually set to Unavailable OR an ingredient is out
     $manualAvailable = strtolower((string)$row['status']) === 'available';
     $hasMissing      = !empty($row['missing_ingredients']);
 
@@ -388,7 +462,7 @@ while ($row = $resultMenus->fetch_assoc()) {
     $menus[] = $row;
 }
 
-// JUMLAH MENU YANG MEMAKAI TIAP INGREDIENT
+// NUMBER OF MENUS USING EACH INGREDIENT
 foreach ($ingredients as $key => $ingredient) {
 
     $rule  = $rulesByName[strtolower($ingredient['ingredient_name'])] ?? null;
@@ -405,7 +479,7 @@ foreach ($ingredients as $key => $ingredient) {
     $ingredients[$key]['used_in'] = $count;
 }
 
-// SIZE (Small / Medium / Large) dari tabel menu_details
+// SIZES (Small / Medium / Large) from table menu_details
 $menuSizes = [];
 
 $resultSizes = $conn->query("
@@ -421,7 +495,7 @@ while ($row = $resultSizes->fetch_assoc()) {
     ];
 }
 
-// Data untuk kartu menu, popup detail, dan validasi pesanan
+// Data for menu cards, detail popup, and order validation
 $menuModalData = [];
 
 foreach ($menus as $menu) {
@@ -429,9 +503,9 @@ foreach ($menus as $menu) {
     $menuId = (int)$menu['menu_id'];
     $sizes  = $menuSizes[$menuId] ?? [];
 
-    // Minuman selalu punya Small / Medium / Large.
-    // Harga dari menu_details; kalau belum ada, memakai harga dasar menu.
-    // Pastry tidak punya size.
+    // Drinks always have Small / Medium / Large.
+    // Price comes from menu_details; falls back to the menu's base price.
+    // Pastries have no size.
     if (!str_contains(strtolower((string)$menu['category_name']), 'pastry')) {
 
         $sizePrices = [];
@@ -464,7 +538,7 @@ foreach ($menus as $menu) {
     ];
 }
 
-// MOMENTS + REKOMENDASI
+// MOMENTS + RECOMMENDATIONS
 $moments = [];
 
 $resultMoments = $conn->query("
@@ -489,10 +563,9 @@ while ($row = $resultRecommendations->fetch_assoc()) {
 }
 
 // ==================================================
-// PROSES FORM (POST biasa, lalu redirect balik)
+// FORM HANDLING (plain POST, then redirect back)
 // ==================================================
 $panelError = '';
-$memberOld  = [];
 $panel      = (string)($_GET['panel'] ?? ($_GET['open'] ?? ''));
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -500,14 +573,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $form      = (string)($_POST['form'] ?? '');
     $backState = readState($_POST);
 
-    // ---- KARTU PESANAN: tipe, nama, member, qty, ke payment ----
+    // ---- ORDER CARD: type, name, member, qty, go to payment ----
     if ($form === 'order') {
 
         $_SESSION['customer_name'] = mb_substr(trim((string)($_POST['customer_name'] ?? '')), 0, 100);
 
         $phone = preg_replace('/\D/', '', (string)($_POST['member_phone'] ?? ''));
 
-        // No. HP berubah -> member yang terpilih dilepas
+        // Phone number changed -> unselect the chosen member
         if ($phone !== ($_SESSION['member_phone'] ?? '')) {
             unset($_SESSION['member_id'], $_SESSION['member_name'], $_SESSION['member_msg']);
         }
@@ -544,32 +617,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($act === 'lookup') {
 
             if ($phone !== '') {
-                $stmt = $conn->prepare("
-                    SELECT u.user_id, u.name
-                    FROM users u
-                    INNER JOIN customer c ON c.user_id = u.user_id
-                    WHERE u.phone = ?
-                    LIMIT 1
-                ");
-                $stmt->bind_param("s", $phone);
-                $stmt->execute();
-                $member = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
+                $member = findMemberByPhone($conn, $phone);
 
                 if ($member) {
-                    $_SESSION['member_id']   = (int)$member['user_id'];
-                    $_SESSION['member_name'] = $member['name'];
-                    $_SESSION['member_msg']  = ['text' => 'Member: ' . $member['name'], 'cls' => 'ok'];
+                    selectMember($member);
                 } else {
                     unset($_SESSION['member_id'], $_SESSION['member_name']);
-                    $_SESSION['member_msg'] = ['text' => 'Member tidak ditemukan', 'cls' => 'error'];
+                    $_SESSION['member_msg'] = ['text' => 'Member not found', 'cls' => 'error'];
                 }
             }
 
-        } elseif ($act === 'new_member') {
-            $extra = ['panel' => 'member'];
-
         } elseif ($act === 'pay' && $_SESSION['cart']) {
+
+            // The cashier typed a phone number but did not press Search:
+            // find the member automatically so the order and points go to the right account
+            if (empty($_SESSION['member_id']) && $phone !== '') {
+                $member = findMemberByPhone($conn, $phone);
+
+                if ($member) {
+                    selectMember($member);
+                } else {
+                    $_SESSION['member_msg'] = ['text' => 'Member not found, order saved as walk-in', 'cls' => 'error'];
+                }
+            }
+
             $extra = ['panel' => 'pay'];
         }
 
@@ -577,7 +648,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // ---- TAMBAH ITEM KE PESANAN (dari popup detail menu) ----
+    // ---- ADD ITEM TO ORDER (from the menu detail popup) ----
     if ($form === 'add') {
 
         $menuId = (int)($_POST['menu_id'] ?? 0);
@@ -586,13 +657,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         try {
             if (!isset($menuModalData[$menuId])) {
-                throw new Exception('Menu tidak ditemukan.');
+                throw new Exception('Menu not found.');
             }
 
             $m = $menuModalData[$menuId];
 
             if (!$m['available']) {
-                throw new Exception($m['name'] . ' sedang tidak tersedia.');
+                throw new Exception($m['name'] . ' is currently unavailable.');
             }
 
             $qty   = max(1, min(99, $qty));
@@ -610,7 +681,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 if (!$found) {
-                    throw new Exception('Pilih size dulu.');
+                    throw new Exception('Please select a size first.');
                 }
             } else {
                 $size = '';
@@ -646,108 +717,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // ---- DAFTARKAN MEMBER BARU ----
-    if ($form === 'member') {
-
-        $started   = false;
-        $memberOld = $_POST;
-        $panel     = 'member';
-
-        try {
-            $name    = trim((string)($_POST['name'] ?? ''));
-            $phone   = preg_replace('/\D/', '', (string)($_POST['phone'] ?? ''));
-            $gender  = (string)($_POST['gender'] ?? '');
-            $dob     = trim((string)($_POST['date_of_birth'] ?? ''));
-            $address = trim((string)($_POST['address'] ?? ''));
-            $email   = strtolower(trim((string)($_POST['email'] ?? '')));
-
-            if ($name === '' || mb_strlen($name) > 100) {
-                throw new Exception('Nama wajib diisi.');
-            }
-
-            if (strlen($phone) < 8 || strlen($phone) > 15) {
-                throw new Exception('No. HP tidak valid.');
-            }
-
-            if (!in_array($gender, ['L', 'P'], true)) {
-                throw new Exception('Pilih jenis kelamin.');
-            }
-
-            $dobDate = DateTime::createFromFormat('Y-m-d', $dob);
-
-            if (!$dobDate || $dobDate->format('Y-m-d') !== $dob || $dobDate > new DateTime('today')) {
-                throw new Exception('Tanggal lahir tidak valid.');
-            }
-
-            if ($address === '') {
-                $address = '-';
-            }
-
-            if ($email === '') {
-                $email = 'member-' . $phone . '@luma.local';
-            } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                throw new Exception('Format email tidak valid.');
-            }
-
-            // No. HP / email tidak boleh sudah terdaftar
-            $stmt = $conn->prepare("SELECT user_id FROM users WHERE phone = ? OR email = ? LIMIT 1");
-            $stmt->bind_param("ss", $phone, $email);
-            $stmt->execute();
-            $exists = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-
-            if ($exists) {
-                throw new Exception('No. HP atau email sudah terdaftar. Coba klik Cari.');
-            }
-
-            // Password acak: member dari kasir belum perlu login
-            $password = bin2hex(random_bytes(8));
-
-            $conn->begin_transaction();
-            $started = true;
-
-            $stmt = $conn->prepare("
-                INSERT INTO users (name, email, password, phone, created_at)
-                VALUES (?, ?, ?, ?, NOW())
-            ");
-            $stmt->bind_param("ssss", $name, $email, $password, $phone);
-            $stmt->execute();
-            $newUserId = $conn->insert_id;
-            $stmt->close();
-
-            $stmt = $conn->prepare("
-                INSERT INTO customer (user_id, gender, address, date_of_birth)
-                VALUES (?, ?, ?, ?)
-            ");
-            $stmt->bind_param("isss", $newUserId, $gender, $address, $dob);
-            $stmt->execute();
-            $stmt->close();
-
-            $conn->commit();
-
-            $_SESSION['member_id']    = (int)$newUserId;
-            $_SESSION['member_name']  = $name;
-            $_SESSION['member_phone'] = $phone;
-            $_SESSION['member_msg']   = ['text' => 'Member baru: ' . $name, 'cls' => 'ok'];
-
-            header('Location: ' . buildUrl($backState, [], 'order-card'));
-            exit;
-
-        } catch (Throwable $err) {
-
-            if ($started) {
-                try {
-                    $conn->rollback();
-                } catch (Throwable $ignore) {
-                }
-            }
-
-            $panelError = $err->getMessage();
-        }
+    // ---- CHECKOUT PREVIEW: Exact / quick amount / Enter only recalculates the change ----
+    if ($form === 'checkout' && ($_POST['pay_act'] ?? 'confirm') !== 'confirm') {
+        $panel = 'pay';
     }
 
-    // ---- CHECKOUT: SIMPAN PESANAN ----
-    if ($form === 'checkout') {
+    // ---- CHECKOUT: SAVE ORDER (only when Confirm is pressed) ----
+    if ($form === 'checkout' && ($_POST['pay_act'] ?? 'confirm') === 'confirm') {
 
         $started = false;
         $panel   = 'pay';
@@ -759,22 +735,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $memberId  = $_SESSION['member_id'] ?? null;
 
             if (!$cart) {
-                throw new Exception('Pesanan masih kosong.');
+                throw new Exception('The order is empty.');
             }
 
             if (!in_array($orderType, ['Dine in', 'Take away'], true)) {
-                throw new Exception('Tipe pesanan tidak valid.');
+                throw new Exception('Invalid order type.');
             }
 
             if (!in_array($payment, ['QRIS', 'Cash', 'Debit'], true)) {
-                throw new Exception('Pilih metode pembayaran.');
+                throw new Exception('Please select a payment method.');
+            }
+
+            // Safety net: a phone number is filled in but no member was selected
+            if ($memberId === null && ($_SESSION['member_phone'] ?? '') !== '') {
+                $found    = findMemberByPhone($conn, (string)$_SESSION['member_phone']);
+                $memberId = $found ? (int)$found['user_id'] : null;
             }
 
             $lines    = [];
             $snapshot = [];
             $total    = 0.0;
+            $totalQty = 0;
 
-            // Harga selalu dihitung ulang dari database, bukan dari keranjang
+            // Prices are always recalculated from the database, not from the cart
             foreach ($cart as $item) {
 
                 $menuId = (int)($item['menu_id'] ?? 0);
@@ -782,13 +765,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $size   = (string)($item['size'] ?? '');
 
                 if (!isset($menuModalData[$menuId]) || $qty < 1 || $qty > 99) {
-                    throw new Exception('Ada item yang tidak valid.');
+                    throw new Exception('There is an invalid item.');
                 }
 
                 $m = $menuModalData[$menuId];
 
                 if (!$m['available']) {
-                    throw new Exception($m['name'] . ' sedang tidak tersedia. Hapus dari pesanan dulu.');
+                    throw new Exception($m['name'] . ' is currently unavailable. Remove it from the order first.');
                 }
 
                 $price = (float)$m['price'];
@@ -801,28 +784,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $subtotal   = $price * $qty;
                 $total     += $subtotal;
+                $totalQty  += $qty;
                 $lines[]    = [$menuId, $qty, $price, $subtotal];
                 $snapshot[] = ['name' => $m['name'], 'size' => $size, 'price' => $price, 'qty' => $qty];
             }
 
-            // Cash: uang diterima harus cukup
+            // Cash: the amount received must be enough
             $change   = 0.0;
             $received = 0.0;
 
             if ($payment === 'Cash') {
 
-                $received = isset($_POST['exact'])
-                    ? $total
-                    : (float)preg_replace('/\D/', '', (string)($_POST['cash_received'] ?? ''));
+                $received = (float)preg_replace('/\D/', '', (string)($_POST['cash_received'] ?? ''));
 
                 if ($received < $total) {
-                    throw new Exception('Uang diterima kurang dari total (' . rupiah($total) . ').');
+                    throw new Exception('Cash received is less than the total (' . rupiah($total) . ').');
                 }
 
                 $change = $received - $total;
             }
 
-            // orders.user_id wajib: member terpilih, atau akun Walk-in
+            // orders.user_id is required: the selected member, or the Walk-in account
             if ($memberId !== null) {
                 $stmt = $conn->prepare("SELECT user_id FROM customer WHERE user_id = ? LIMIT 1");
                 $stmt->bind_param("i", $memberId);
@@ -831,25 +813,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->close();
 
                 if (!$isMember) {
-                    throw new Exception('Member tidak valid, cari ulang member.');
+                    throw new Exception('Invalid member, please search for the member again.');
                 }
             }
 
             $orderUserId = $memberId ?? guestUserId($conn);
 
-            // Pesanan dari kasir sudah dibayar -> status 'Success'
-            $dbStatus  = enumValue($conn, 'orders', 'status', 'Success');
-            $dbType    = enumValue($conn, 'orders', 'order_type', $orderType === 'Take away' ? 'Take Away' : 'Dine In');
-            $dbPayment = enumValue($conn, 'orders', 'payment_method', $payment);
+            // Cashier orders are already paid -> payment status 'Success'
+            // order_status starts at 'Pending' so it shows up in Order Receive and in the customer's My Orders
+            $dbStatus      = enumValue($conn, 'orders', 'status', 'Success');
+            $dbOrderStatus = enumValue($conn, 'orders', 'order_status', 'Pending');
+            $dbType        = enumValue($conn, 'orders', 'order_type', $orderType === 'Take away' ? 'Take Away' : 'Dine In');
+            $dbPayment     = enumValue($conn, 'orders', 'payment_method', $payment);
 
             $conn->begin_transaction();
             $started = true;
 
             $stmt = $conn->prepare("
-                INSERT INTO orders (user_id, order_date, total_amount, status, order_type, payment_method)
-                VALUES (?, NOW(), ?, ?, ?, ?)
+                INSERT INTO orders (user_id, order_date, total_amount, status, order_status, order_type, payment_method)
+                VALUES (?, NOW(), ?, ?, ?, ?, ?)
             ");
-            $stmt->bind_param("idsss", $orderUserId, $total, $dbStatus, $dbType, $dbPayment);
+            $stmt->bind_param("idssss", $orderUserId, $total, $dbStatus, $dbOrderStatus, $dbType, $dbPayment);
             $stmt->execute();
             $orderId = $conn->insert_id;
             $stmt->close();
@@ -865,20 +849,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $stmt->close();
+
+            // Members earn points for every menu item purchased
+            $earnedPoints = 0;
+
+            if ($memberId !== null) {
+                $earnedPoints = $totalQty * POINTS_PER_MENU;
+                addRewardPoints($conn, (int)$memberId, $earnedPoints);
+            }
+
             $conn->commit();
 
-            // Data struk disimpan di session, lalu keranjang dikosongkan
+            // Member name for the receipt (the member may have been found by the safety net)
+            $memberName = $_SESSION['member_name'] ?? '';
+
+            if ($memberId !== null && $memberName === '') {
+                $stmt = $conn->prepare("SELECT name FROM users WHERE user_id = ? LIMIT 1");
+                $stmt->bind_param("i", $memberId);
+                $stmt->execute();
+                $nameRow    = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                $memberName = $nameRow['name'] ?? '';
+            }
+
+            // Receipt data is kept in the session, then the cart is emptied
             $_SESSION['receipt'] = [
                 'id'       => $orderId,
                 'type'     => $orderType,
                 'customer' => ($_SESSION['customer_name'] ?? '') !== ''
                     ? $_SESSION['customer_name']
-                    : ($_SESSION['member_name'] ?? '-'),
+                    : ($memberName !== '' ? $memberName : '-'),
                 'items'    => $snapshot,
                 'total'    => $total,
                 'method'   => $payment,
                 'received' => $received,
                 'change'   => $change,
+                'points'   => $earnedPoints,
                 'date'     => date('d/m/Y H:i:s')
             ];
 
@@ -909,13 +915,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // ==================================================
-// DATA UNTUK TAMPILAN
+// DATA FOR THE VIEW
 // ==================================================
 $state  = ($_SERVER['REQUEST_METHOD'] === 'POST') ? readState($_POST) : readState($_GET);
 $itemId = filter_var($_GET['item'] ?? null, FILTER_VALIDATE_INT) ?: 0;
 
 $cart      = $_SESSION['cart'];
 $cartSum   = cartTotal($cart);
+$cartItems = cartQty($cart);
 $orderType = $_SESSION['order_type'];
 $receipt   = $_SESSION['receipt'] ?? null;
 $memberMsg = $_SESSION['member_msg'] ?? null;
@@ -923,14 +930,27 @@ $memberMsg = $_SESSION['member_msg'] ?? null;
 $flash = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
 
-if (!in_array($panel, ['ingredients', 'member', 'pay', 'receipt'], true)) {
+if (!in_array($panel, ['ingredients', 'pay', 'receipt'], true)) {
     $panel = '';
 }
 
-if ($panel === 'pay' && !$cart)       $panel = '';
+// CASH PREVIEW (payment popup): quick amounts, exact amount, live change
+$quickAmounts = [50000, 100000];
+$payAct       = (string)($_POST['pay_act'] ?? '');
+$cashInput    = preg_replace('/\D/', '', (string)($_POST['cash_received'] ?? ''));
+
+if ($payAct === 'exact') {
+    $cashInput = (string)(int)round($cartSum);
+} elseif (preg_match('/^quick:(\d+)$/', $payAct, $qm) && in_array((int)$qm[1], $quickAmounts, true)) {
+    $cashInput = $qm[1];
+}
+
+$changePreview = $cashInput !== '' ? (float)$cashInput - $cartSum : null;
+
+if ($panel === 'pay' && !$cart)        $panel = '';
 if ($panel === 'receipt' && !$receipt) $panel = '';
 
-// Popup detail menu hanya tampil kalau tidak ada popup lain
+// The menu detail popup only shows when no other popup is open
 $modalMenu = ($panel === '' && $itemId && isset($menuModalData[$itemId])) ? $menuModalData[$itemId] : null;
 
 // POPULAR MENU
@@ -944,7 +964,7 @@ usort($popularMenus, function ($a, $b) {
 
 $popularMenus = array_slice($popularMenus, 0, 4);
 
-// ALL MENU: filter kategori / moment + pencarian (dulu dikerjakan JavaScript)
+// ALL MENU: category / moment filter + search
 $momentIds = $state['moment'] ? ($momentMenuIds[$state['moment']] ?? []) : null;
 $keyword   = $state['q'];
 
@@ -961,7 +981,7 @@ $filteredMenus = array_filter($menus, function ($menu) use ($state, $momentIds, 
     return $matchGroup && $matchName;
 });
 
-// KARTU MENU (sekarang berupa link ke popup detail)
+// MENU CARD (a link to the detail popup)
 function renderMenuCard(array $menu, array $state, array $menuModalData): string
 {
     $data  = $menuModalData[(int)$menu['menu_id']] ?? [];
@@ -1041,25 +1061,45 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
     <link rel="stylesheet" href="menu.css">
 
     <style>
-        /* Tombol/kartu sekarang berupa link atau label, bukan button */
         a.menu-card { display: block; color: inherit; text-decoration: none; }
         a.filter-btn { display: inline-flex; align-items: center; text-decoration: none; }
         a.moment-card { color: inherit; text-decoration: none; }
         a.close-btn { display: inline-block; text-align: center; text-decoration: none; }
         a.ingredient-btn, a.see-all { text-decoration: none; }
 
-        /* Pilihan size / metode bayar tanpa JavaScript (radio) */
+        /* Size / payment method choice without JavaScript (radio) */
         .size-pick { position: relative; display: inline-block; }
         .size-pick input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
         .size-pick input:checked + .size-btn { outline: 2px solid #6f4e37; outline-offset: -2px; font-weight: 700; }
         .size-pick input:disabled + .size-btn { opacity: .5; }
 
-        /* Popup berbasis CSS saja (Bootstrap modal tanpa Bootstrap JS) */
+        /* CSS-only popups (Bootstrap modal without Bootstrap JS) */
         .modal.show.d-block { overflow-y: auto; }
-        .order-card form { margin: 0; }
+        /* Order card: the <form> wraps everything, so it must carry the layout itself */
+        .order-card form { margin: 0; display: flex; flex-direction: column; gap: 14px; }
+        .order-card .order-type { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0; }
+        .order-card .order-type-btn { width: 100%; }
+        .order-card .order-input { width: 100%; margin: 0; }
+        .order-card .order-items { display: flex; flex-direction: column; gap: 10px; margin: 0; }
+        .order-card .order-empty { margin: 0; }
+        .order-card .member-row { display: flex; gap: 10px; margin: 0; }
+        .order-card .member-row .order-input { flex: 1; min-width: 0; }
+        .order-card .member-result { display: block; margin: -6px 0 0; min-height: 0; }
+        .order-card .member-result:empty { display: none; }
+        .order-card .order-total { display: flex; justify-content: space-between; align-items: center; margin: 4px 0 0; }
+        .order-card .pay-btn { width: 100%; }
         .hidden-submit { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
         .order-item-qty button { cursor: pointer; }
         .search-box button { border: 0; background: none; padding: 0; color: inherit; cursor: pointer; }
+
+        /* Cash: quick amounts + live change (no JavaScript) */
+        .quick-cash { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+        .quick-cash button { flex: 1; padding: 9px 12px; border: 1px solid #d9c9b8; border-radius: 10px; background: #fff; color: #6f4e37; font-weight: 600; cursor: pointer; }
+        .quick-cash button:hover:not(:disabled) { background: #f6eee6; }
+        .quick-cash button:disabled { opacity: .45; cursor: not-allowed; }
+        .cash-result { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding: 10px 14px; border-radius: 10px; }
+        .cash-result.enough { background: #eef6ee; color: #2f5d34; }
+        .cash-result.short { background: #fdeeee; color: #a33a3a; }
     </style>
 </head>
 
@@ -1125,7 +1165,7 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
 
         <div class="menu-columns">
 
-            <!-- KOLOM KIRI: POPULAR + ALL MENU -->
+            <!-- LEFT COLUMN: POPULAR + ALL MENU -->
             <div class="menu-left">
 
                 <!-- POPULAR MENU -->
@@ -1168,7 +1208,7 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
 
                     <div class="menu-toolbar">
 
-                        <!-- FILTER KATEGORI -->
+                        <!-- CATEGORY FILTER -->
                         <div class="filters">
 
                             <a
@@ -1187,11 +1227,11 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
 
                         <div class="toolbar-right">
 
-                            <!-- PENCARIAN -->
+                            <!-- SEARCH -->
                             <form method="get" action="menu.php#all-menu" class="search-box">
                                 <?php if ($state['cat'] !== 'all'): ?><input type="hidden" name="cat" value="<?= e($state['cat']) ?>"><?php endif; ?>
                                 <?php if ($state['moment']): ?><input type="hidden" name="moment" value="<?= (int)$state['moment'] ?>"><?php endif; ?>
-                                <button type="submit" aria-label="Cari"><i class="fa-solid fa-magnifying-glass"></i></button>
+                                <button type="submit" aria-label="Search"><i class="fa-solid fa-magnifying-glass"></i></button>
                                 <input type="text" name="q" value="<?= e($keyword) ?>" placeholder="Search menu...">
                             </form>
 
@@ -1208,7 +1248,7 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
 
                     </div>
 
-                    <!-- LUMA MOMENTS (filter alternatif) -->
+                    <!-- LUMA MOMENTS (alternative filter) -->
                     <?php if ($moments): ?>
 
                         <div class="moment-label">
@@ -1224,7 +1264,7 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
                                 <?php
                                 [$momentIcon, $momentDesc] = momentInfo($moment['moment_name']);
                                 $isActiveMoment = $state['moment'] === (int)$moment['moment_id'];
-                                // Klik lagi = matikan moment, kembali ke All
+                                // Click again = turn the moment off, back to All
                                 $momentLink = $isActiveMoment
                                     ? buildUrl(array_merge($state, ['cat' => 'all', 'moment' => 0]), [], 'all-menu')
                                     : buildUrl(array_merge($state, ['moment' => (int)$moment['moment_id']]), [], 'all-menu');
@@ -1263,18 +1303,18 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
 
             </div>
 
-            <!-- KOLOM KANAN: CARD PESANAN -->
+            <!-- RIGHT COLUMN: ORDER CARD -->
             <aside class="order-card" id="order-card">
 
-                <h3 class="order-title">Pesanan</h3>
+                <h3 class="order-title">Order</h3>
 
                 <form method="post" action="menu.php">
 
                     <input type="hidden" name="form" value="order">
                     <?= stateInputs($state) ?>
 
-                    <!-- Tombol default saat menekan Enter di kolom teks -->
-                    <button type="submit" name="act" value="save" class="hidden-submit" tabindex="-1" aria-hidden="true">Simpan</button>
+                    <!-- Default button when pressing Enter in a text field -->
+                    <button type="submit" name="act" value="save" class="hidden-submit" tabindex="-1" aria-hidden="true">Save</button>
 
                     <div class="order-type">
                         <button type="submit" name="act" value="type_dine" class="order-type-btn <?= $orderType === 'Dine in' ? 'active' : '' ?>">Dine in</button>
@@ -1287,7 +1327,7 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
                         class="order-input"
                         maxlength="100"
                         value="<?= e($_SESSION['customer_name'] ?? '') ?>"
-                        placeholder="Nama pelanggan (opsional)"
+                        placeholder="Customer name (optional)"
                     >
 
                     <div class="order-items">
@@ -1302,9 +1342,9 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
                                 </div>
 
                                 <div class="order-item-qty">
-                                    <button type="submit" name="act" value="cart:dec:<?= (int)$index ?>" aria-label="Kurangi">−</button>
+                                    <button type="submit" name="act" value="cart:dec:<?= (int)$index ?>" aria-label="Decrease">−</button>
                                     <span><?= (int)$item['qty'] ?></span>
-                                    <button type="submit" name="act" value="cart:inc:<?= (int)$index ?>" aria-label="Tambah">+</button>
+                                    <button type="submit" name="act" value="cart:inc:<?= (int)$index ?>" aria-label="Increase">+</button>
                                 </div>
 
                             </div>
@@ -1313,7 +1353,7 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
 
                     </div>
 
-                    <p class="order-empty<?= $cart ? ' hidden' : '' ?>">Belum ada item</p>
+                    <p class="order-empty<?= $cart ? ' hidden' : '' ?>">No items yet</p>
 
                     <div class="member-row">
                         <input
@@ -1322,16 +1362,12 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
                             class="order-input"
                             inputmode="numeric"
                             value="<?= e($_SESSION['member_phone'] ?? '') ?>"
-                            placeholder="No. HP member"
+                            placeholder="Member phone number"
                         >
-                        <button type="submit" name="act" value="lookup" class="member-btn">Cari</button>
+                        <button type="submit" name="act" value="lookup" class="member-btn">Search</button>
                     </div>
 
                     <small class="member-result <?= e($memberMsg['cls'] ?? '') ?>"><?= e($memberMsg['text'] ?? '') ?></small>
-
-                    <button type="submit" name="act" value="new_member" class="member-new-btn">
-                        <i class="fa-solid fa-user-plus"></i> Daftarkan member baru
-                    </button>
 
                     <div class="order-total">
                         <span>Total</span>
@@ -1353,14 +1389,14 @@ function renderMenuCard(array $menu, array $state, array $menuModalData): string
 
 <?php
 // ==================================================
-// POPUP (modal Bootstrap, dibuka lewat parameter URL, tanpa JavaScript)
+// POPUPS (Bootstrap modals, opened via URL parameters, no JavaScript)
 // ==================================================
 $closeUrl = buildUrl($state);
 ?>
 
 <?php if ($panel === 'ingredients'): ?>
 
-<!-- MODAL INGREDIENT STOCK -->
+<!-- INGREDIENT STOCK MODAL -->
 <div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true">
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content detail-modal">
@@ -1404,7 +1440,7 @@ $closeUrl = buildUrl($state);
                                 <small>
                                     Min <?= e(formatQty($minimum)) ?> <?= e($ingredient['unit']) ?>
                                     ·
-                                    Used in <?= (int)$ingredient['used_in'] ?> menu
+                                    Used in <?= (int)$ingredient['used_in'] ?> <?= (int)$ingredient['used_in'] === 1 ? 'menu' : 'menus' ?>
                                 </small>
                             </div>
 
@@ -1457,7 +1493,7 @@ $closeUrl = buildUrl($state);
 
 <?php if ($modalMenu): ?>
 
-<!-- MODAL DETAIL MENU -->
+<!-- MENU DETAIL MODAL -->
 <div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content detail-modal">
@@ -1542,93 +1578,7 @@ $closeUrl = buildUrl($state);
 
                 <div class="modal-footer detail-modal-footer">
                     <a href="<?= e($closeUrl) ?>" class="close-btn close-btn-light">Close</a>
-                    <button type="submit" class="close-btn" <?= $modalMenu['available'] ? '' : 'disabled' ?>>Tambah ke Pesanan</button>
-                </div>
-
-            </form>
-
-        </div>
-    </div>
-</div>
-<div class="modal-backdrop fade show"></div>
-
-<?php endif; ?>
-
-
-<?php if ($panel === 'member'): ?>
-
-<!-- MODAL MEMBER BARU -->
-<div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content detail-modal">
-
-            <form method="post" action="menu.php">
-
-                <input type="hidden" name="form" value="member">
-                <?= stateInputs($state) ?>
-
-                <div class="modal-header detail-modal-header">
-                    <div>
-                        <h5 class="modal-title">Member Baru</h5>
-                        <small>Data disimpan ke database pelanggan</small>
-                    </div>
-
-                    <a href="<?= e($closeUrl) ?>" class="btn-close btn-close-white" aria-label="Close"></a>
-                </div>
-
-                <div class="modal-body menu-modal-body">
-
-                    <div class="member-form">
-
-                        <div>
-                            <label class="menu-modal-label" for="newMemberName">Nama *</label>
-                            <input type="text" name="name" class="order-input" id="newMemberName" maxlength="100" autocomplete="off" value="<?= e($memberOld['name'] ?? '') ?>">
-                        </div>
-
-                        <div>
-                            <label class="menu-modal-label" for="newMemberPhone">No. HP *</label>
-                            <input type="text" name="phone" inputmode="numeric" class="order-input" id="newMemberPhone" autocomplete="off" value="<?= e($memberOld['phone'] ?? ($_SESSION['member_phone'] ?? '')) ?>">
-                        </div>
-
-                        <div class="member-form-row">
-
-                            <div>
-                                <label class="menu-modal-label" for="newMemberGender">Jenis kelamin *</label>
-                                <select name="gender" class="order-input" id="newMemberGender">
-                                    <option value="">Pilih</option>
-                                    <option value="P" <?= ($memberOld['gender'] ?? '') === 'P' ? 'selected' : '' ?>>Perempuan</option>
-                                    <option value="L" <?= ($memberOld['gender'] ?? '') === 'L' ? 'selected' : '' ?>>Laki-laki</option>
-                                </select>
-                            </div>
-
-                            <div>
-                                <label class="menu-modal-label" for="newMemberDob">Tanggal lahir *</label>
-                                <input type="date" name="date_of_birth" class="order-input" id="newMemberDob" value="<?= e($memberOld['date_of_birth'] ?? '') ?>">
-                            </div>
-
-                        </div>
-
-                        <div>
-                            <label class="menu-modal-label" for="newMemberAddress">Alamat (opsional)</label>
-                            <input type="text" name="address" class="order-input" id="newMemberAddress" autocomplete="off" value="<?= e($memberOld['address'] ?? '') ?>">
-                        </div>
-
-                        <div>
-                            <label class="menu-modal-label" for="newMemberEmail">Email (opsional)</label>
-                            <input type="email" name="email" class="order-input" id="newMemberEmail" autocomplete="off" value="<?= e($memberOld['email'] ?? '') ?>">
-                        </div>
-
-                    </div>
-
-                    <?php if ($panelError !== ''): ?>
-                        <div class="menu-modal-alert pay-error"><?= e($panelError) ?></div>
-                    <?php endif; ?>
-
-                </div>
-
-                <div class="modal-footer detail-modal-footer">
-                    <a href="<?= e($closeUrl) ?>" class="close-btn close-btn-light">Batal</a>
-                    <button type="submit" class="close-btn">Simpan Member</button>
+                    <button type="submit" class="close-btn" <?= $modalMenu['available'] ? '' : 'disabled' ?>>Add to Order</button>
                 </div>
 
             </form>
@@ -1643,7 +1593,7 @@ $closeUrl = buildUrl($state);
 
 <?php if ($panel === 'pay'): ?>
 
-<!-- MODAL PAYMENT -->
+<!-- PAYMENT MODAL -->
 <?php $chosenMethod = (string)($_POST['payment_method'] ?? 'Cash'); ?>
 
 <div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true">
@@ -1655,10 +1605,13 @@ $closeUrl = buildUrl($state);
                 <input type="hidden" name="form" value="checkout">
                 <?= stateInputs($state) ?>
 
+                <!-- Default button: pressing Enter in the cash field only recalculates the change -->
+                <button type="submit" name="pay_act" value="calc" class="hidden-submit" tabindex="-1" aria-hidden="true">Calculate</button>
+
                 <div class="modal-header detail-modal-header">
                     <div>
                         <h5 class="modal-title">Payment</h5>
-                        <small><?= e($orderType) ?> · <?= count($cart) ?> item</small>
+                        <small><?= e($orderType) ?> · <?= count($cart) ?> <?= count($cart) === 1 ? 'item' : 'items' ?></small>
                     </div>
 
                     <a href="<?= e($closeUrl) ?>" class="btn-close btn-close-white" aria-label="Close"></a>
@@ -1671,7 +1624,14 @@ $closeUrl = buildUrl($state);
                         <strong><?= e(rupiah($cartSum)) ?></strong>
                     </div>
 
-                    <span class="menu-modal-label">Metode pembayaran</span>
+                    <?php if (!empty($_SESSION['member_id']) && !empty($_SESSION['member_name'])): ?>
+                        <small class="member-result ok">
+                            Member: <?= e($_SESSION['member_name']) ?>
+                            · +<?= (int)($cartItems * POINTS_PER_MENU) ?> points
+                        </small>
+                    <?php endif; ?>
+
+                    <span class="menu-modal-label">Payment method</span>
 
                     <div class="size-options">
                         <?php foreach (['Cash', 'QRIS', 'Debit'] as $method): ?>
@@ -1682,8 +1642,22 @@ $closeUrl = buildUrl($state);
                         <?php endforeach; ?>
                     </div>
 
-                    <!-- KHUSUS CASH -->
+                    <!-- CASH ONLY -->
                     <div class="cash-section">
+
+                        <div class="quick-cash">
+                            <button type="submit" name="pay_act" value="exact" formnovalidate>Exact amount</button>
+
+                            <?php foreach ($quickAmounts as $amount): ?>
+                                <button
+                                    type="submit"
+                                    name="pay_act"
+                                    value="quick:<?= (int)$amount ?>"
+                                    formnovalidate
+                                    <?= $amount < $cartSum ? 'disabled' : '' ?>
+                                ><?= e(rupiah($amount)) ?></button>
+                            <?php endforeach; ?>
+                        </div>
 
                         <input
                             type="number"
@@ -1693,14 +1667,21 @@ $closeUrl = buildUrl($state);
                             step="1"
                             inputmode="numeric"
                             autocomplete="off"
-                            value="<?= e($_POST['cash_received'] ?? '') ?>"
-                            placeholder="Uang diterima (khusus Cash)"
+                            value="<?= e($cashInput) ?>"
+                            placeholder="Cash received (Cash only), press Enter to see the change"
                         >
 
-                        <label class="cash-change" style="cursor:pointer">
-                            <span>Uang pas</span>
-                            <input type="checkbox" name="exact" value="1" <?= isset($_POST['exact']) ? 'checked' : '' ?>>
-                        </label>
+                        <?php if ($changePreview !== null): ?>
+                            <div class="cash-change cash-result <?= $changePreview >= 0 ? 'enough' : 'short' ?>">
+                                <?php if ($changePreview >= 0): ?>
+                                    <span>Change</span>
+                                    <strong><?= e(rupiah($changePreview)) ?></strong>
+                                <?php else: ?>
+                                    <span>Still short</span>
+                                    <strong><?= e(rupiah(abs($changePreview))) ?></strong>
+                                <?php endif; ?>
+                            </div>
+                        <?php endif; ?>
 
                     </div>
 
@@ -1711,8 +1692,8 @@ $closeUrl = buildUrl($state);
                 </div>
 
                 <div class="modal-footer detail-modal-footer">
-                    <a href="<?= e($closeUrl) ?>" class="close-btn close-btn-light">Batal</a>
-                    <button type="submit" class="close-btn">Confirm</button>
+                    <a href="<?= e($closeUrl) ?>" class="close-btn close-btn-light">Cancel</a>
+                    <button type="submit" name="pay_act" value="confirm" class="close-btn">Confirm</button>
                 </div>
 
             </form>
@@ -1727,15 +1708,15 @@ $closeUrl = buildUrl($state);
 
 <?php if ($panel === 'receipt'): ?>
 
-<!-- MODAL STRUK -->
+<!-- RECEIPT MODAL -->
 <div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true">
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content detail-modal">
 
             <div class="modal-header detail-modal-header">
                 <div>
-                    <h5 class="modal-title">Struk</h5>
-                    <small>Pembayaran berhasil</small>
+                    <h5 class="modal-title">Receipt</h5>
+                    <small>Payment successful</small>
                 </div>
             </div>
 
@@ -1746,7 +1727,7 @@ $closeUrl = buildUrl($state);
                     <div class="receipt-brand">LÜMA</div>
                     <div class="receipt-line">Order #<?= (int)$receipt['id'] ?> · <?= e($receipt['type']) ?></div>
                     <div class="receipt-line"><?= e($receipt['date']) ?></div>
-                    <div class="receipt-line">Pelanggan: <?= e($receipt['customer']) ?></div>
+                    <div class="receipt-line">Customer: <?= e($receipt['customer']) ?></div>
 
                     <div class="receipt-dash"></div>
 
@@ -1766,21 +1747,25 @@ $closeUrl = buildUrl($state);
 
                     <?php if ($receipt['method'] === 'Cash'): ?>
                         <div class="receipt-row"><span>Cash</span><span><?= e(rupiah($receipt['received'])) ?></span></div>
-                        <div class="receipt-row"><span>Kembali</span><span><?= e(rupiah($receipt['change'])) ?></span></div>
+                        <div class="receipt-row"><span>Change</span><span><?= e(rupiah($receipt['change'])) ?></span></div>
                     <?php else: ?>
-                        <div class="receipt-row"><span>Bayar</span><span><?= e($receipt['method']) ?></span></div>
+                        <div class="receipt-row"><span>Paid by</span><span><?= e($receipt['method']) ?></span></div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($receipt['points'])): ?>
+                        <div class="receipt-row"><span>Points earned</span><span>+<?= (int)$receipt['points'] ?></span></div>
                     <?php endif; ?>
 
                     <div class="receipt-dash"></div>
 
-                    <div class="receipt-thanks">Terima kasih ☕</div>
+                    <div class="receipt-thanks">Thank you ☕</div>
 
                 </div>
 
             </div>
 
             <div class="modal-footer detail-modal-footer">
-                <!-- Cetak struk: gunakan Ctrl+P / menu Print di browser -->
+                <!-- Print the receipt with Ctrl+P / the browser's Print menu -->
                 <a href="menu.php?new_order=1" class="close-btn">New Order</a>
             </div>
 
