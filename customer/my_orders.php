@@ -1,4 +1,3 @@
-
 <?php
 session_start();
 
@@ -22,27 +21,68 @@ function rupiah($value): string
     return 'Rp ' . number_format((float)$value, 0, ',', '.');
 }
 
+/*
+|--------------------------------------------------------------------------
+| Progres pesanan (diatur kasir di Order Receive)
+| Pending -> Processing -> Completed
+| Mengembalikan [label, class CSS di my_orders.css, keterangan untuk customer]
+|--------------------------------------------------------------------------
+*/
+function progressInfo($raw): array
+{
+    $key = strtolower(trim((string)$raw));
+
+    if (in_array($key, ['processing', 'process', 'preparing'], true)) {
+        return ['Processing', 'preparing', 'Pesananmu sedang dibuat oleh barista.'];
+    }
+
+    if (in_array($key, ['completed', 'complete', 'done', 'selesai'], true)) {
+        return ['Completed', 'completed', 'Pesananmu sudah selesai dibuat. Selamat menikmati!'];
+    }
+
+    if (str_contains($key, 'cancel')) {
+        return ['Cancelled', 'cancelled', 'Pesanan ini dibatalkan.'];
+    }
+
+    return ['Pending', 'pending', 'Pesananmu sudah diterima dan menunggu diproses kasir.'];
+}
+
+// Status pembayaran: Success / Failed (kolom orders.status)
+function paymentInfo($raw): array
+{
+    $key = strtolower(trim((string)$raw));
+
+    if ($key === 'failed') {
+        return ['Failed', 'cancelled'];
+    }
+
+    return [ucfirst($key) !== '' ? ucfirst($key) : 'Success', 'default'];
+}
+
 $userId = (int) $_SESSION['user_id'];
 $orders = [];
 $error = '';
+$justOrdered = isset($_GET['success']);
 
 /*
 |--------------------------------------------------------------------------
 | Ambil riwayat pesanan milik customer yang sedang login
+| status       = status pembayaran (Success / Failed)
+| order_status = progres pesanan (Pending / Processing / Completed)
 |--------------------------------------------------------------------------
 */
 $sql = "
-   SELECT
-    order_id,
-    order_date,
-    total_amount,
-    status,
-    order_status,
-    order_type,
-    payment_method
-FROM orders
-WHERE user_id = ?
-ORDER BY order_date DESC, order_id DESC
+    SELECT
+        order_id,
+        order_date,
+        total_amount,
+        status,
+        order_status,
+        order_type,
+        payment_method
+    FROM orders
+    WHERE user_id = ?
+    ORDER BY order_date DESC, order_id DESC
 ";
 
 $stmt = $conn->prepare($sql);
@@ -103,32 +143,6 @@ if (!$error && !empty($orders)) {
         $error = 'Detail pesanan belum dapat dimuat.';
     }
 }
-
-function statusClass($status): string
-{
-    switch (strtolower((string)$status)) {
-        case 'pending':
-            return 'pending';
-
-        case 'confirmed':
-            return 'confirmed';
-
-        case 'preparing':
-            return 'preparing';
-
-        case 'ready':
-            return 'ready';
-
-        case 'completed':
-            return 'completed';
-
-        case 'cancelled':
-            return 'cancelled';
-
-        default:
-            return 'default';
-    }
-}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -136,16 +150,47 @@ function statusClass($status): string
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>My Orders | LŪMA Café</title>
-    <link rel="stylesheet" href="my_orders.css?v=3">
+    <!-- Status pesanan diperbarui otomatis tiap 20 detik (tanpa JavaScript) -->
+    <meta http-equiv="refresh" content="20">
 
+    <title>My Orders | LŪMA Café</title>
+    <link rel="stylesheet" href="my_orders.css?v=4">
+
+    <style>
+        .order-badges {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .order-progress-note {
+            margin: 0;
+            padding: 12px 28px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #6b4f3a;
+            background: #fbf7f2;
+            border-bottom: 1px solid #efe6db;
+        }
+
+        .orders-success {
+            margin: 0 0 24px;
+            padding: 14px 18px;
+            border-radius: 14px;
+            background: #eef6ee;
+            border: 1px solid #cfe3cf;
+            color: #2f5d34;
+            font-size: 14px;
+        }
+    </style>
 </head>
 
 <body>
 
 <!-- NAVBAR -->
 <header class="orders-navbar">
-    <a href="../dashboard_main.php" class="orders-logo">
+    <a href="dashboard.php" class="orders-logo">
         LŪMA<span>.</span>
     </a>
 
@@ -171,6 +216,12 @@ function statusClass($status): string
             Every order tells a story. Take a look at your LŪMA moments.
         </p>
     </section>
+
+    <?php if ($justOrdered && $error === ''): ?>
+        <div class="orders-success">
+            Pesananmu sudah kami terima dan akan segera diproses oleh kasir.
+        </div>
+    <?php endif; ?>
 
     <!-- ORDER CONTENT -->
     <?php if ($error !== ''): ?>
@@ -218,12 +269,15 @@ function statusClass($status): string
 
         <section class="orders-list">
 
-           <?php foreach ($orders as $order): ?>
-    <?php
-        $orderId = (int) $order['order_id'];
-        $status = (string) $order['status'];
-        $details = $orderDetails[$orderId] ?? [];
-    ?>
+            <?php foreach ($orders as $order): ?>
+
+                <?php
+                $orderId = (int) $order['order_id'];
+                [$statusLabel, $statusCss, $statusNote] = progressInfo($order['order_status']);
+                [$payLabel, $payCss] = paymentInfo($order['status']);
+                $details = $orderDetails[$orderId] ?? [];
+                $timestamp = strtotime((string) $order['order_date']);
+                ?>
 
                 <article class="order-card">
 
@@ -234,17 +288,26 @@ function statusClass($status): string
                             </span>
 
                             <h2>
-                                <?= e(date(
-                                    'd M Y, H:i',
-                                    strtotime($order['order_date'])
-                                )) ?>
+                                <?= $timestamp
+                                    ? e(date('d M Y, H:i', $timestamp))
+                                    : e($order['order_date']) ?>
                             </h2>
                         </div>
 
-                        <span class="order-status <?= e(statusClass($status)) ?>">
-                            <?= e($status) ?>
-                        </span>
+                        <div class="order-badges">
+                            <span class="order-status <?= e($payCss) ?>">
+                                <?= e($payLabel) ?>
+                            </span>
+
+                            <span class="order-status <?= e($statusCss) ?>">
+                                <?= e($statusLabel) ?>
+                            </span>
+                        </div>
                     </div>
+
+                    <p class="order-progress-note">
+                        <?= e($statusNote) ?>
+                    </p>
 
                     <div class="order-items">
 
@@ -282,10 +345,12 @@ function statusClass($status): string
                             <span>Payment Method</span>
                             <strong><?= e($order['payment_method']) ?></strong>
                         </div>
-                    <div class="order-payment">
-                        <span>Order Type</span>
-                        <strong><?= e($order['order_type']) ?></strong>
-                    </div>
+
+                        <div class="order-payment">
+                            <span>Order Type</span>
+                            <strong><?= e($order['order_type']) ?></strong>
+                        </div>
+
                         <div class="order-total">
                             <span>Total</span>
                             <strong>

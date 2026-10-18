@@ -16,6 +16,100 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
+/*
+|--------------------------------------------------------------------------
+| Pengaturan Rewards
+|--------------------------------------------------------------------------
+| +10 poin untuk setiap 1 menu yang dibeli (dihitung dari quantity).
+| Level (ENUM): Bronze, Silver, Gold.
+*/
+const POINTS_PER_MENU = 10;
+const SILVER_MIN_POINTS = 100;
+const GOLD_MIN_POINTS = 300;
+
+function rewardLevel(int $points): string
+{
+    if ($points >= GOLD_MIN_POINTS) {
+        return 'Gold';
+    }
+
+    if ($points >= SILVER_MIN_POINTS) {
+        return 'Silver';
+    }
+
+    return 'Bronze';
+}
+
+/**
+ * Tambah poin reward customer dan perbarui level.
+ * Dipanggil di dalam transaksi pesanan (sebelum commit).
+ */
+function addRewardPoints(mysqli $conn, int $userId, int $totalQty): void
+{
+    $earned = $totalQty * POINTS_PER_MENU;
+
+    if ($earned <= 0) {
+        return;
+    }
+
+    // Kunci baris rewards milik user (jika sudah ada)
+    $stmt = $conn->prepare(
+        "SELECT points
+         FROM rewards
+         WHERE user_id = ?
+         LIMIT 1
+         FOR UPDATE"
+    );
+
+    if (!$stmt) {
+        throw new Exception('Gagal menyiapkan data rewards.');
+    }
+
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+
+    $result = $stmt->get_result();
+    $row = $result->fetch_assoc();
+    $stmt->close();
+
+    if ($row) {
+        $newPoints = (int) $row['points'] + $earned;
+        $newLevel = rewardLevel($newPoints);
+
+        $stmt = $conn->prepare(
+            "UPDATE rewards
+             SET points = ?, level = ?
+             WHERE user_id = ?"
+        );
+
+        if (!$stmt) {
+            throw new Exception('Gagal memperbarui rewards.');
+        }
+
+        $stmt->bind_param('isi', $newPoints, $newLevel, $userId);
+    } else {
+        $newPoints = $earned;
+        $newLevel = rewardLevel($newPoints);
+
+        $stmt = $conn->prepare(
+            "INSERT INTO rewards (user_id, points, level)
+             VALUES (?, ?, ?)"
+        );
+
+        if (!$stmt) {
+            throw new Exception('Gagal membuat data rewards.');
+        }
+
+        $stmt->bind_param('iis', $userId, $newPoints, $newLevel);
+    }
+
+    if (!$stmt->execute()) {
+        throw new Exception('Gagal menyimpan poin rewards.');
+    }
+
+    $stmt->close();
+}
+
 $userId = (int) $_SESSION['user_id'];
 $cart = $_SESSION['cart'] ?? [];
 $paymentMethod = $_POST['payment_method'] ?? '';
@@ -46,6 +140,7 @@ if (!in_array($paymentMethod, $allowedMethods, true)) {
 |--------------------------------------------------------------------------
 */
 $totalAmount = 0;
+$totalQty = 0;
 $items = [];
 
 foreach ($cart as $item) {
@@ -60,6 +155,7 @@ foreach ($cart as $item) {
 
     $subtotal = $price * $quantity;
     $totalAmount += $subtotal;
+    $totalQty += $quantity;
 
     $items[] = [
         'menu_id' => $menuId,
@@ -82,42 +178,40 @@ try {
     | Simpan data utama pesanan
     |--------------------------------------------------------------------------
     */
-  
-$sqlOrder = "
-    INSERT INTO orders
-    (
-        user_id,
-        order_date,
-        total_amount,
-        status,
-        order_status,
-        order_type,
-        payment_method
-    )
-    VALUES (?, NOW(), ?, 'Success', 'Pending', ?, ?)
-";
+    $sqlOrder = "
+        INSERT INTO orders
+        (
+            user_id,
+            order_date,
+            total_amount,
+            status,
+            order_status,
+            order_type,
+            payment_method
+        )
+        VALUES (?, NOW(), ?, 'Success', 'Pending', ?, ?)
+    ";
 
-$stmtOrder = $conn->prepare($sqlOrder);
+    $stmtOrder = $conn->prepare($sqlOrder);
 
-if (!$stmtOrder) {
-    throw new Exception('Gagal menyiapkan data pesanan.');
-}
+    if (!$stmtOrder) {
+        throw new Exception('Gagal menyiapkan data pesanan.');
+    }
 
-$stmtOrder->bind_param(
-    'idss',
-    $userId,
-    $totalAmount,
-    $orderType,
-    $paymentMethod
-);
+    $stmtOrder->bind_param(
+        'idss',
+        $userId,
+        $totalAmount,
+        $orderType,
+        $paymentMethod
+    );
 
-if (!$stmtOrder->execute()) {
-    throw new Exception('Gagal menyimpan pesanan.');
-}
+    if (!$stmtOrder->execute()) {
+        throw new Exception('Gagal menyimpan pesanan.');
+    }
 
-$orderId = (int) $conn->insert_id;
-$stmtOrder->close();
-
+    $orderId = (int) $conn->insert_id;
+    $stmtOrder->close();
 
     /*
     |--------------------------------------------------------------------------
@@ -163,6 +257,14 @@ $stmtOrder->close();
     }
 
     $stmtDetail->close();
+
+    /*
+    |--------------------------------------------------------------------------
+    | Tambah poin rewards: +10 untuk setiap 1 menu
+    | (status pesanan langsung 'Success', jadi poin diberikan sekarang)
+    |--------------------------------------------------------------------------
+    */
+    addRewardPoints($conn, $userId, $totalQty);
 
     // Simpan semua data jika seluruh proses berhasil.
     $conn->commit();

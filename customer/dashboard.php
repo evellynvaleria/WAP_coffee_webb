@@ -45,7 +45,7 @@ $name = $_SESSION['name'] ?? 'Customer';
 
 $rewards = [
     'points' => 0,
-    'level' => 'Beginner'
+    'level'  => 'Bronze'
 ];
 
 $recommendedMenus = [];
@@ -59,7 +59,7 @@ $recentOrders = [];
 try {
     $stmt = $conn->prepare(
         "SELECT name
-         FROM `user`
+         FROM users
          WHERE user_id = ?
          LIMIT 1"
     );
@@ -85,6 +85,9 @@ $initial = function_exists('mb_substr')
 
 /* ========================================
    REWARDS
+   Level (ENUM): Bronze, Silver, Gold
+   Poin bertambah +10 setiap 1 menu dibeli
+   (diproses saat pembayaran di menu.php).
    ======================================== */
 
 try {
@@ -102,7 +105,7 @@ try {
 
     if ($row = $result->fetch_assoc()) {
         $rewards['points'] = (int)($row['points'] ?? 0);
-        $rewards['level'] = $row['level'] ?? 'Beginner';
+        $rewards['level']  = $row['level'] ?? 'Bronze';
     }
 
     $stmt->close();
@@ -112,14 +115,26 @@ try {
 
 /* ========================================
    RECOMMENDED MENU
+   Harga: menus.price dulu, jika kosong/0 pakai harga
+   termurah dari menu_details.
    ======================================== */
 
 try {
     $result = $conn->query(
-        "SELECT menu_id, menu_name, price, image
-         FROM menus
-         WHERE status = 'Available'
-         ORDER BY menu_id DESC
+        "SELECT
+            m.menu_id,
+            m.menu_name,
+            m.image,
+            COALESCE(
+                NULLIF(m.price, 0),
+                NULLIF(MIN(d.price), 0),
+                0
+            ) AS price
+         FROM menus m
+         LEFT JOIN menu_details d ON d.menu_id = m.menu_id
+         WHERE m.status = 'Available'
+         GROUP BY m.menu_id, m.menu_name, m.image, m.price
+         ORDER BY m.menu_id DESC
          LIMIT 4"
     );
 
@@ -159,8 +174,7 @@ try {
             order_id,
             order_date,
             total_amount,
-            status,
-            order_status
+            status
          FROM orders
          WHERE user_id = ?
          ORDER BY order_date DESC
@@ -200,7 +214,7 @@ try {
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap"
           rel="stylesheet">
 
-    <link rel="stylesheet" href="dashboard.css?v=5">
+    <link rel="stylesheet" href="dashboard.css?v=6">
 </head>
 
 <body>
@@ -308,8 +322,8 @@ try {
             <h2>Every sip brings you closer.</h2>
 
             <p>
-                Kumpulkan poin dari pesananmu dan nikmati
-                perjalanan bersama LŪMA.
+                Kumpulkan 10 poin untuk setiap menu yang kamu pesan
+                dan nikmati perjalanan bersama LŪMA.
             </p>
         </div>
 
@@ -317,7 +331,7 @@ try {
             <span class="stat-label">YOUR POINTS</span>
 
             <strong>
-                <?= number_format($rewards['points']) ?>
+                <?= number_format($rewards['points'], 0, ',', '.') ?>
             </strong>
 
             <span class="level-pill">
@@ -361,16 +375,18 @@ try {
 
                     <?php
                     /*
-                     * Kolom image dapat berisi nama file saja,
-                     * misalnya Affogato.jpg.
-                     *
+                     * Kolom image berisi nama file saja (mis. Affogato.jpg).
                      * Semua gambar menu berada di assets/menu/.
+                     * Pengecekan file dilakukan di server (PHP),
+                     * bukan lagi dengan JavaScript onerror.
                      */
                     $imageName = basename(
                         trim((string)($menu['image'] ?? ''))
                     );
 
-                    $imageSrc = $imageName !== ''
+                    $imagePath = __DIR__ . '/../assets/menu/' . $imageName;
+
+                    $imageSrc = ($imageName !== '' && is_file($imagePath))
                         ? '../assets/menu/' . rawurlencode($imageName)
                         : '';
                     ?>
@@ -387,13 +403,7 @@ try {
                                     alt="<?= e($menu['menu_name']) ?>"
                                     class="menu-image"
                                     loading="lazy"
-                                    onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
                                 >
-
-                                <div class="image-fallback"
-                                     style="display:none">
-                                    LŪMA.
-                                </div>
 
                             <?php else: ?>
 
@@ -584,16 +594,10 @@ try {
 
                         <div class="order-statuses">
 
-                            <span class="status-label">Payment</span>
+                            <span class="status-label">Status</span>
 
                             <span class="status-pill <?= e(statusClass($order['status'] ?? 'Pending')) ?>">
                                 <?= e($order['status'] ?? 'Pending') ?>
-                            </span>
-
-                            <span class="status-label">Order</span>
-
-                            <span class="status-pill <?= e(statusClass($order['order_status'] ?? 'Pending')) ?>">
-                                <?= e($order['order_status'] ?? 'Pending') ?>
                             </span>
 
                         </div>
@@ -692,7 +696,6 @@ try {
                 </p>
 
             </div>
-
 
         </div>
 
